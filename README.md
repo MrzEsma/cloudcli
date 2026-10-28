@@ -44,6 +44,34 @@ account, API keys). They are stored only in your container's volume.
 Mount and back up `/home/cloudcli` (auth DB, sessions, plugin config) and
 `/workspace` (your projects).
 
+## Using it (first 10 minutes)
+
+1. **Log in** at `http://<host>:3001` with the admin user/password you set.
+2. **Claude**: open Settings → Claude and sign in with your own Claude
+   subscription (the login opens in the terminal tab), or set
+   `ANTHROPIC_API_KEY` when you start the container. Chat runs the real Claude
+   Code TUI, so it bills your subscription, never the API by surprise.
+3. **Codex / OpenAI**: use the *OpenAI setup* plugin tab for a guided login.
+4. **Projects**: put repos under `/workspace` (volume) or clone from the UI.
+5. **Voice**: set `SONIOX_API_KEY` (get one at soniox.com), then use the
+   mic in the chat composer.
+6. **Reply to part of a message**: select text in any answer → comment/reply.
+7. **Browser feedback**: the *Browser UI Feedback* tab lets an agent open a
+   page, screenshot it and take your marked-up feedback.
+8. **Scheduled prompts** (cron tab) and **Terminal** tab are built in.
+
+## Updating
+
+Docker Hub image: `docker pull esmln/cloudcli:latest`, then
+`docker rm -f cloudcli` and run it again with the same volumes — your data
+lives in the volumes. Source build: `git pull && bash install.sh`.
+
+## Security notes
+
+Put it behind HTTPS (Caddy/nginx/Cloudflare tunnel) if it leaves your LAN, use
+a strong admin password, and never share the `cloudcli-home` volume: it holds
+your provider logins.
+
 ## What's inside
 
 - `cloudcli-overlay/` — the patched cloudcli server/UI package, applied over
