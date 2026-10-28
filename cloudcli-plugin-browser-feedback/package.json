@@ -1,0 +1,24 @@
+{
+  "name": "cloudcli-plugin-browser-feedback",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser UI review and copyable feedback plugin for CloudCLI.",
+  "license": "MIT",
+  "scripts": {
+    "build:dev": "tsc && esbuild src/index.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=dist/index.js",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build:dev && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "express": "^4.22.2",
+    "playwright": "^1.55.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.28.1",
+    "typescript": "^5.9.0"
+  }
+}

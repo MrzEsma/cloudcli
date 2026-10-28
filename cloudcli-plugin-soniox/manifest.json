@@ -1,0 +1,13 @@
+{
+  "name": "cloudcli-plugin-soniox",
+  "displayName": "Soniox Voice",
+  "version": "0.2.0",
+  "description": "Live speech-to-text with Soniox. Streams microphone transcription in the Soniox Voice tab and keeps the local OpenAI-compatible endpoint for CloudCLI's built-in microphone.",
+  "author": "",
+  "icon": "icon.svg",
+  "type": "module",
+  "slot": "tab",
+  "entry": "dist/index.js",
+  "server": "dist/server.js",
+  "permissions": ["network"]
+}

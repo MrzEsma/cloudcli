@@ -1,0 +1,13 @@
+{
+  "name": "cloudcli-browser-feedback",
+  "displayName": "Browser UI Feedback",
+  "version": "0.1.0",
+  "description": "Open a remote page, interact with it, select a UI region, and copy a structured feedback note into your chat.",
+  "author": "CloudCLI community",
+  "icon": "icon.svg",
+  "type": "module",
+  "slot": "tab",
+  "entry": "dist/index.js",
+  "server": "dist/server.js",
+  "permissions": ["network"]
+}

@@ -1,0 +1,13 @@
+{
+  "name": "cloudcli-plugin-openai-setup",
+  "displayName": "اتصال Codex و Claude Code",
+  "version": "0.4.0",
+  "description": "Connect this tenant to direct OpenAI or the Hoosh Code proxy for Codex or Claude Code.",
+  "author": "",
+  "icon": "icon.svg",
+  "type": "module",
+  "slot": "tab",
+  "entry": "dist/index.js",
+  "server": "dist/server.js",
+  "permissions": ["network"]
+}

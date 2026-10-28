@@ -1,0 +1,22 @@
+{
+  "name": "cloudcli-plugin-openai-setup",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "description": "Per-tenant direct OpenAI and Hoosh Code proxy setup for CloudCLI Codex.",
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "tsc && esbuild src/index.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "express": "^4.22.2"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.28.1",
+    "typescript": "^5.9.0"
+  }
+}

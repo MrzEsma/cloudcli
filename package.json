@@ -1,0 +1,26 @@
+{
+  "name": "local-cloudcli-runner",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local launcher for Cloud CLI (formerly Claude Code UI)",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "bash scripts/start-production.sh",
+    "build:plugins": "bash scripts/build-plugins.sh",
+    "test": "npm test --prefix cloudcli-plugin-soniox && npm test --prefix cloudcli-plugin-browser-feedback && npm test --prefix cloudcli-plugin-openai-setup && npm test --prefix cloudcli-plugin-terminal && npm test --prefix cloudcli-plugin-cron"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.241",
+    "@cloudcli-ai/cloudcli": "1.36.1",
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "@openai/codex": "0.159.2",
+    "express": "^4.22.2",
+    "multer": "^2.0.2",
+    "opencode-ai": "1.17.13",
+    "undici": "^7.16.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "mermaid": "11.17.2"
+  }
+}

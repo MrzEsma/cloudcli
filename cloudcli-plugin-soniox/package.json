@@ -1,0 +1,28 @@
+{
+  "name": "cloudcli-plugin-soniox",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Soniox speech-to-text plugin for CloudCLI.",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc && esbuild src/index.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=dist/index.js",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@soniox/client": "^2.2.0",
+    "express": "^4.22.2",
+    "multer": "^2.0.2",
+    "undici": "^7.16.0",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/multer": "^2.0.0",
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.28.1",
+    "typescript": "^5.9.0"
+  }
+}
