@@ -194,9 +194,11 @@ async function main() {
         const gitBin = [path.join(ROOT, 'runtime', 'git', 'cmd'), path.join(ROOT, 'runtime', 'git', 'bin')];
         const bash = path.join(ROOT, 'runtime', 'git', 'bin', 'bash.exe');
         if (fs.existsSync(bash)) env.CLAUDE_CODE_GIT_BASH_PATH = bash;
-        env.PATH = [...gitBin, path.join(ROOT, 'runtime'), env.PATH].join(path.delimiter);
+        env.PATH = [...gitBin, path.join(ROOT, 'runtime'),
+            path.join(nodeModules, '.bin'), env.PATH].join(path.delimiter);
     } else {
-        env.PATH = [path.join(ROOT, 'runtime', 'bin'), env.PATH].join(path.delimiter);
+        env.PATH = [path.join(ROOT, 'runtime', 'bin'),
+            path.join(nodeModules, '.bin'), env.PATH].join(path.delimiter);
     }
     env.HOST = '127.0.0.1';                 // desktop listens locally only
     env.SERVER_PORT = String(port);
