@@ -14,6 +14,13 @@ set -Eeuo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
 NODE_VERSION="${NODE_VERSION:-22.23.1}"
+# Last claude-code release that ships runnable JS (cli.js, ~49MB). 2.1.120+
+# are 132KB stubs that install a ~330MB native binary per platform.
+CLAUDE_JS_VERSION="${CLAUDE_JS_VERSION:-2.1.110}"
+# codex 0.159.x ships a 320-450MB binary; 0.110.0 is the last ~120MB one and
+# still speaks the same exec/startThread API the server uses. Override to
+# bump (also updates codex-sdk to the matched version).
+CODEX_VERSION="${CODEX_VERSION:-0.110.0}"
 DATE="$(date +%Y%m%d)"
 DIST="$HERE/dist"
 KEEP_STAGE="${KEEP_STAGE:-0}"
@@ -74,9 +81,36 @@ retarget_natives() {  # retarget_natives <stage> <platform> <arch>
   [[ -d "$nm/node-pty/prebuilds/$pf-$arch" && -d "$nm/bcrypt/prebuilds/$pf-$arch" ]] || {
     echo "bundled prebuilds missing for $pf-$arch" >&2; exit 1; }
 
-  # --- platform package families (exact versions come from package-lock) ---
+  # --- slim: claude-code as runnable JS (no ~330MB native binary per platform) ---
+  echo "  [slim] @anthropic-ai/claude-code@$CLAUDE_JS_VERSION (JS cli.js)"
+  fetch_pkg "@anthropic-ai/claude-code" "@anthropic-ai/claude-code@$CLAUDE_JS_VERSION" "$nm"
+  [[ -f "$nm/@anthropic-ai/claude-code/cli.js" ]] || { echo "claude-code JS cli.js missing" >&2; exit 1; }
+  rm -rf "$nm/@anthropic-ai/claude-code-"*   # native platform stubs/binaries
+  # claude-code 2.1.x vendors ripgrep for every platform — keep only the target
+  local rgv_keep
+  case "$pf-$arch" in
+    win32-x64)   rgv_keep=x64-win32;;   win32-arm64) rgv_keep=arm64-win32;;
+    linux-x64)   rgv_keep=x64-linux;;   linux-arm64) rgv_keep=arm64-linux;;
+    darwin-x64)  rgv_keep=x64-darwin;;  darwin-arm64) rgv_keep=arm64-darwin;;
+  esac
+  local rgv="$nm/@anthropic-ai/claude-code/vendor/ripgrep"
+  [[ -d "$rgv" ]] && find "$rgv" -mindepth 1 -maxdepth 1 -type d ! -name "$rgv_keep" -exec rm -rf {} +
+  # claude-agent-sdk platform binaries (~250MB each): resolved lazily at query()
+  # time, and SDK-billed claude is disabled by policy — keep only the JS.
+  rm -rf "$nm/@anthropic-ai/claude-agent-sdk-"*
+  rm -f "$nm/.bin/claude"                    # points at the old bin/claude.exe
+  if [[ "$pf" != win32 ]]; then
+    ln -sf ../@anthropic-ai/claude-code/cli.js "$nm/.bin/claude"
+  fi
+
+  # --- codex (pinned pair: launcher JS + SDK JS + one platform binary) ---
   local pf_npm arch_npm
   pf_npm="$pf"; arch_npm="$arch"
+  if [[ "$CODEX_VERSION" != lock ]]; then
+    echo "  [slim] @openai/codex + codex-sdk @$CODEX_VERSION"
+    fetch_pkg "@openai/codex" "@openai/codex@$CODEX_VERSION" "$nm"
+    fetch_pkg "@openai/codex-sdk" "@openai/codex-sdk@$CODEX_VERSION" "$nm"
+  fi
   local codex_dir="codex-$pf_npm-$arch_npm"
   local codex_spec
   codex_spec="$(python3 - "$stage/node_modules/@openai/codex/package.json" "$pf_npm" "$arch_npm" <<'PY'
@@ -88,33 +122,33 @@ PY
 )"
   echo "  [platform] @openai/$codex_dir ($codex_spec)"
   fetch_pkg "@openai/$codex_dir" "$codex_spec" "$nm"
-  # codex-sdk resolves its own nested copy of the platform package
-  if [[ -d "$nm/@openai/codex-sdk/node_modules/@openai" ]]; then
-    fetch_pkg "@openai/$codex_dir" "$codex_spec" "$nm/@openai/codex-sdk/node_modules"
-  fi
+  # codex-sdk's nested platform copy (~270MB): node resolution walks up to the
+  # top-level pkg we just installed, so the nested one is dead weight.
+  rm -rf "$nm/@openai/codex-sdk/node_modules"
   find "$nm/@openai" -maxdepth 1 -name 'codex-*' ! -name "$codex_dir" ! -name 'codex-sdk' -exec rm -rf {} +
-  find "$nm/@openai/codex-sdk/node_modules/@openai" -maxdepth 1 -name 'codex-*' ! -name "$codex_dir" -exec rm -rf {} + 2>/dev/null || true
+  # code-mode-host (~70MB) is only spawned by codex's experimental code mode;
+  # voice-host only serves `codex voice` (UI voice input goes through Soniox).
+  find "$nm/@openai/$codex_dir" -type f \( -name 'codex-code-mode-host*' -o -name 'codex-voice-host*' \) -exec rm -f {} +
 
-  # opencode's platform packages are named "windows", not "win32" (upstream
-  # quirk); prune ONLY the known platform names — 'opencode-*' would also
-  # match the main package 'opencode-ai'.
-  local oc_pf; [[ "$pf_npm" == win32 ]] && oc_pf=windows || oc_pf="$pf_npm"
-  local oc_pkg="opencode-$oc_pf-$arch_npm"
-  local oc_ver; oc_ver="$(lock_version "$oc_pkg")"
-  [[ -n "$oc_ver" ]] || { echo "no lock entry for $oc_pkg" >&2; exit 1; }
-  echo "  [platform] $oc_pkg@$oc_ver"
-  fetch_pkg "$oc_pkg" "$oc_pkg@$oc_ver" "$nm"
-  local oc_bin_src
-  oc_bin_src="$(find "$nm/$oc_pkg" -type f \( -name 'opencode.exe' -o -name 'opencode' \) | head -1)"
-  [[ -n "$oc_bin_src" ]] || { echo "no binary inside $oc_pkg" >&2; exit 1; }
-  mkdir -p "$nm/opencode-ai/bin"
-  cp -f "$oc_bin_src" "$nm/opencode-ai/bin/opencode.exe"
-  for oc_other in linux-x64 linux-arm64 linux-x64-baseline linux-x64-baseline-musl linux-arm64-musl \
-                  windows-x64 windows-x64-baseline windows-arm64 \
-                  darwin-x64 darwin-x64-baseline darwin-arm64; do
-    [[ "$oc_pkg" == "opencode-$oc_other" ]] || rm -rf "$nm/opencode-$oc_other"
-  done
-  rm -rf "$nm/opencode-ai/postinstall.mjs"   # already applied; must not re-run for another platform
+  # --- opencode dropped entirely (owner decision 2026-10-31: Claude + Codex only) ---
+  rm -rf "$nm/opencode-ai" "$nm"/opencode-* "$nm/.bin/opencode"*
+
+  # --- frontend-only deps: the shipped UI is prebuilt, nothing imports these ---
+  rm -rf "$nm/mermaid" "$nm/@mermaid-js" "$nm/lucide-react" "$nm/es-toolkit" \
+         "$nm/cytoscape-fcose" "$nm/cytoscape-layout-base" "$nm/react-syntax-highlighter" \
+         "$nm/refractor" "$nm/prismjs" "$nm/katex" "$nm/jimp" "$nm/@jimp" "$nm/gifwrap" \
+         "$nm/react" "$nm/react-dom" "$nm/cytoscape" "$nm/pixelmatch" "$nm/scheduler" \
+         "$nm/@anthropic-ai/sdk"   # API-key SDK route: 0 imports, policy says no API billing
+  # native-module source/doc trees: runtime needs only JS + prebuilt binaries
+  rm -rf "$nm/node-pty/src" "$nm/node-pty/test" "$nm/node-pty/.github" "$nm/node-pty/binding.gyp" \
+         "$nm/better-sqlite3/src" "$nm/better-sqlite3/deps" "$nm/better-sqlite3/docs" \
+         "$nm/better-sqlite3/benchmark" "$nm/bcrypt/src" "$nm/bcrypt/test"
+  # claude-code vendor extras: seccomp is linux-only, audio-capture is the
+  # terminal-mic feature (UI voice goes through Soniox), typings unused.
+  rm -rf "$nm/@anthropic-ai/claude-code/vendor/seccomp" \
+         "$nm/@anthropic-ai/claude-code/vendor/audio-capture" \
+         "$nm/@anthropic-ai/claude-code/sdk-tools.d.ts"
+  find "$nm/.bin" -xtype l -delete 2>/dev/null || true   # links to pruned pkgs
 
   local rg_ver; rg_ver="$(lock_version "@vscode/ripgrep-$pf_npm-$arch_npm")"
   if [[ -n "$rg_ver" ]]; then
@@ -134,8 +168,6 @@ write_cmd_shims() {  # npm-equivalent .cmd shims for Windows bundles
   }
   shim claude    '..\@anthropic-ai\claude-code\cli.js'
   shim codex     '..\@openai\codex\bin\codex.js'
-  # opencode is a native exe — run directly:
-  printf '@ECHO off\r\n"%%~dp0\\..\\opencode-ai\\bin\\opencode.exe" %%*\r\n' > "$bin/opencode.cmd"
   shim cloudcli  '..\@cloudcli-ai\cloudcli\dist-server\server\cli.js'
 }
 
@@ -147,7 +179,14 @@ add_runtime() {  # add_runtime <stage> <target>
   mkdir -p "$stage/runtime"
   case "$dist" in
     *.zip)
-      python3 -c "import zipfile;zipfile.ZipFile('$WORK_DL/$dist').extractall('$stage/runtime')"
+      # win zip extracts as node-v<ver>-win-x64/node.exe — flatten to runtime/node.exe
+      python3 -c "
+import zipfile
+z = zipfile.ZipFile('$WORK_DL/$dist')
+(member,) = [n for n in z.namelist() if n.endswith('/node.exe')]
+info = z.getinfo(member)
+info.filename = 'node.exe'
+z.extract(info, '$stage/runtime')"
       ;;
     *.tar.xz|*.tar.gz)
       python3 - "$WORK_DL/$dist" "$stage/runtime" <<'PYT'
@@ -187,7 +226,53 @@ for rel in json.load(sys.stdin):
   [[ -n "$url" ]] || { echo "PortableGit asset not found" >&2; exit 1; }
   curl -fsSL --retry 3 -o "$WORK_DL/portablegit.7z.exe" "$url"
   "$seven" x -y -o"$stage/runtime/git" "$WORK_DL/portablegit.7z.exe" >/dev/null
-  [[ -f "$stage/runtime/git/usr/bin/bash.exe" && -f "$stage/runtime/git/cmd/git.exe" ]] || {
+  # Prune to git + bash + coreutils (~175MB raw, ~76MB zipped). 2026
+  # PortableGit layout: ucrt64 (git suite), usr (msys bash + coreutils).
+  # Keep: bash + coreutils + ssh + https remotes + SSL certs + terminfo.
+  # Drop: GUI/difftool stack (Avalonia/Skia/Tcl), GCM .NET auth stack,
+  # perl, tcl/tk, vim, git-lfs (LFS repos degrade to pointer checkouts),
+  # docs/locales, orphaned msys DLLs.
+  local g="$stage/runtime/git"
+  rm -rf "$g/usr/share/vim" "$g/usr/share/doc" "$g/usr/share/man" "$g/usr/share/html" \
+         "$g/usr/share/info" "$g/usr/share/locale" "$g/usr/share/misc" "$g/usr/share/mintty" \
+         "$g/usr/share/git" "$g/usr/lib/perl5" "$g/usr/share/perl5" \
+         "$g/usr/lib/tcl8"* "$g/usr/share/tcl8"* \
+         "$g/ucrt64/share/doc" "$g/ucrt64/lib/tcl8"* "$g/ucrt64/share/zoneinfo" \
+         "$g/ucrt64/share/git-gui" "$g/usr/share/git-gui" \
+         "$g/cmd/git-gui.exe" "$g/cmd/gitk.exe" 2>/dev/null || true
+  rm -f "$g/usr/bin/"{vi,vim,view,ex,rvim,rview,vimdiff,vimtutor} \
+        "$g/usr/bin/"{getconf.exe,mintty.exe,nano.exe,openssl.exe,perl.exe,perl5.*.exe,pldd.exe,ssp.exe} \
+        "$g/usr/bin/gawk-"*.exe 2>/dev/null || true
+  # GUI/difftool + GCM stacks (scalar, git-gui, credential manager, .NET dlls)
+  find "$g/ucrt64/bin" -maxdepth 1 -type f \( -name 'Avalonia*' -o -name 'SkiaSharp*' \
+       -o -name 'HarfBuzzSharp*' -o -name 'MicroCom*' -o -name 'Microsoft.*' -o -name 'System.*' \
+       -o -name 'GitHub.dll' -o -name 'GitLab.dll' -o -name 'Atlassian*' \
+       -o -name 'git-credential-manager*' -o -name 'scalar.exe' -o -name 'pdftotext.exe' \
+       -o -name 'gitk*' -o -name 'msalruntime.dll' \) -delete 2>/dev/null || true
+  rm -rf "$g/ucrt64/libexec/git-core"/git-gui* "$g/ucrt64/libexec/git-core"/gitk* 2>/dev/null || true
+  # niche network/serving subcommands (github/gitlab remotes use remote-https)
+  for exe in git-remote-ftp git-remote-ftps git-imap-send git-daemon \
+             git-http-backend git-http-push git-http-fetch; do
+    rm -f "$g/ucrt64/libexec/git-core/$exe.exe" "$g/ucrt64/bin/$exe.exe" 2>/dev/null || true
+  done
+  rm -f "$g/ucrt64/bin/git-lfs.exe" 2>/dev/null || true
+  # orphaned msys DLLs (perl/krb5/gnutls/gpg chains; their exes are gone)
+  rm -f "$g/usr/bin/"msys-perl5_42.dll "$g/usr/bin/"msys-apr{,util}* \
+        "$g/usr/bin/"msys-{heimbase,heimntlm,hx509,hcrypto,krb5,gssapi,assuan,ksba,gcrypt, \
+                             gpg-error,npth,fido2,cbor,gdbm,gdbm_compat,mpfr,com_err,asn1,ffi, \
+                             edit,lz4}*.dll 2>/dev/null || true
+  # git-lfs filter removed -> LFS repos warn and check out pointers, not error
+  python3 - "$g/etc/gitconfig" <<'PYG'
+import re, sys
+p = sys.argv[1]
+s = open(p).read()
+s = re.sub(r'\[filter "lfs"\]\n(?:\t[^\n]*\n)+', '', s)
+s = s.replace('[credential]\n\thelper = helper-selector\n', '')
+open(p, 'w').write(s)
+PYG
+  [[ -f "$g/usr/bin/bash.exe" && -f "$g/cmd/git.exe" \
+     && -f "$g/ucrt64/libexec/git-core/git-remote-https.exe" \
+     && -f "$g/usr/bin/ssh.exe" ]] || {
     echo "PortableGit missing bash/git — Claude shell tools would be broken" >&2; exit 1; }
 }
 
@@ -228,6 +313,9 @@ build_target() {
 
   echo "  [plugins] building (dist is platform-neutral)"
   (cd "$stage" && bash scripts/build-plugins.sh "$stage")
+  # build-plugins npm-installs dev deps into each plugin dir; the dists are
+  # fully bundled, so the plugin-local node_modules are pure build artifacts.
+  rm -rf "$stage"/cloudcli-plugin-*/node_modules
 
   retarget_natives "$stage" "$pf" "$arch"
   add_runtime "$stage" "$target"

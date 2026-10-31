@@ -24,6 +24,15 @@ for f in README-FA.md; do [[ -f "$APP/$f" ]] || fail "$f missing"; done
 [[ -f "$APP/node_modules/better-sqlite3/build/Release/better_sqlite3.node" ]] || fail "sqlite native missing"
 [[ -d "$APP/node_modules/node-pty/prebuilds" ]] || fail "node-pty prebuilds missing"
 
+# slim invariants
+[[ -f "$APP/node_modules/@anthropic-ai/claude-code/cli.js" ]] || fail "claude-code JS cli.js missing"
+[[ ! -e "$APP/node_modules/@anthropic-ai/claude-code/bin/claude.exe" ]] || fail "native claude binary leaked (stub version installed)"
+[[ -z "$(find "$APP/node_modules/@anthropic-ai" -maxdepth 1 -name 'claude-code-*' -o -maxdepth 1 -name 'claude-agent-sdk-*' | head -1)" ]] \
+  || fail "anthropic platform binary packages leaked"
+[[ -z "$(find "$APP/node_modules" -maxdepth 1 -name 'opencode*' | head -1)" ]] || fail "opencode leaked (dropped by owner decision)"
+[[ -z "$(find "$APP/node_modules/@openai" -name 'codex-code-mode-host*' | head -1)" ]] || fail "codex code-mode-host leaked"
+[[ ! -d "$APP/node_modules/@openai/codex-sdk/node_modules" ]] || fail "nested codex-sdk platform copy leaked"
+
 # target-scoped binary sanity
 case "$TARGET" in
   win-x64)
@@ -33,6 +42,10 @@ case "$TARGET" in
     head -c2 "$APP/node_modules/better-sqlite3/build/Release/better_sqlite3.node" | grep -q MZ || fail "sqlite native is not a PE"
     [[ -d "$APP/node_modules/@openai/codex-win32-x64" ]] || fail "win codex missing"
     [[ ! -d "$APP/node_modules/@openai/codex-linux-x64" ]] || fail "linux codex leaked into win bundle"
+    [[ ! -f "$APP/node_modules/.bin/opencode.cmd" ]] || fail "opencode.cmd leaked"
+    [[ ! -d "$APP/runtime/git/usr/share/vim" && ! -d "$APP/runtime/git/ucrt64/share/doc" && ! -d "$APP/runtime/git/usr/lib/perl5" ]] || fail "PortableGit not pruned"
+    [[ -f "$APP/runtime/git/ucrt64/etc/ssl/cert.pem" || -f "$APP/runtime/git/mingw64/etc/ssl/certs/ca-bundle.crt" ]] || fail "git SSL certs missing (https clone would break)"
+    [[ -f "$APP/runtime/git/ucrt64/libexec/git-core/git-remote-https.exe" ]] || fail "git-remote-https missing"
     ;;
   linux-x64)
     [[ -x "$APP/runtime/bin/node" ]] || fail "bundled node missing"

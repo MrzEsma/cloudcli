@@ -212,11 +212,14 @@ async function main() {
     env.VOICE_API_BASE_URL = `http://127.0.0.1:${sonioxPort}/v1`;
     env.VOICE_STT_MODEL = env.VOICE_STT_MODEL || 'stt-async-v5';
     env.VOICE_TIMEOUT_MS = env.VOICE_TIMEOUT_MS || '120000';
-    const claudeBinName = WIN ? 'claude.cmd' : 'claude';
-    const codexBinName = WIN ? 'codex.cmd' : 'codex';
-    env.CLAUDE_CLI_PATH = env.CLAUDE_CLI_PATH || path.join(nodeModules, '.bin', claudeBinName);
-    env.CLOUDCLI_CODEX_PATH = env.CLOUDCLI_CODEX_PATH || path.join(nodeModules, '.bin', codexBinName);
-    env.CODEX_CLI_PATH = env.CLOUDCLI_CODEX_PATH;
+    env.CLAUDE_CLI_PATH = env.CLAUDE_CLI_PATH || path.join(nodeModules, '.bin', WIN ? 'claude.cmd' : 'claude');
+    // codex-sdk spawns the binary directly (no shell), so on Windows it must
+    // resolve the real codex.exe itself — a .cmd shim would fail to spawn.
+    if (!WIN) {
+        env.CLOUDCLI_CODEX_PATH = env.CLOUDCLI_CODEX_PATH || path.join(nodeModules, '.bin', 'codex');
+        env.CODEX_CLI_PATH = env.CLOUDCLI_CODEX_PATH;
+    }
+    env.DISABLE_AUTOUPDATER = '1';   // keep the bundled claude-code version pinned
 
     // --- home skeleton (mirrors scripts/start-production.sh) ---
     const pluginsHome = path.join(HOME, '.claude-code-ui', 'plugins');
@@ -227,7 +230,6 @@ async function main() {
         path.join(HOME, '.claude'),
         path.join(HOME, '.claude', 'skills'),
         path.join(HOME, '.codex', 'skills'),
-        path.join(HOME, '.config', 'opencode', 'skill'),
         WORKSPACE,
     ]) {
         fs.mkdirSync(dir, { recursive: true });
@@ -248,7 +250,6 @@ async function main() {
     for (const skillRoot of [
         path.join(HOME, '.claude', 'skills'),
         path.join(HOME, '.codex', 'skills'),
-        path.join(HOME, '.config', 'opencode', 'skill'),
     ]) {
         syncDir(skillSrc, path.join(skillRoot, 'browser-feedback'));
     }

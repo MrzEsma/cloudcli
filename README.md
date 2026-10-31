@@ -2,7 +2,7 @@
 
 A self-hosted web UI for agent CLIs: **interactive Claude Code** (your
 subscription, driven through a real terminal session — no API-key billing
-path), OpenAI Codex and OpenCode, with voice input (Soniox), browser-UI
+path) and OpenAI Codex, with voice input (Soniox), browser-UI
 feedback, an in-app terminal, scheduled prompts, subagent visibility and
 chat annotations on selected text.
 
@@ -23,16 +23,18 @@ bash desktop/make-bundles.sh all          # or: linux-x64 | win-x64 | darwin-arm
 
 Each `desktop/dist/cloudcli-desktop-<os>-<date>.zip` contains the whole app:
 the Node runtime for that OS, prebuilt dependencies, plugins, the overlay
-applied, portable git+bash (Windows) and double-click launchers
+applied, a slim portable git+bash (Windows) and double-click launchers
 (`Start-CloudCLI.bat` / `Start CloudCLI.command` / `start-cloudcli.sh`).
 The user extracts the ZIP, double-clicks, and the browser opens on the local
 app; the first login is written to `data/LOGIN.txt` inside the folder. All
 state lives in the folder (`data/`, `workspace/`) — deleting the folder
 uninstalls. The server binds to `127.0.0.1` only.
 
+Bundles are ~150–200 MB: Claude Code ships as its runnable-JS build (the
+last `2.1.x` that still publishes `cli.js`) and OpenCode is not included.
 Non-technical guide (Persian): `README-FA.md`. Windows chat runs Claude Code
 under ConPTY through the bundled Node — no bash needed on the machine; the
-bundled MinGit supplies bash for Claude's shell tools.
+bundled PortableGit supplies bash for Claude's shell tools.
 
 ## Quickstart (Docker)
 
@@ -122,7 +124,8 @@ then `docker build`. Plugin sources build with esbuild/tsc via
 
 ## Notes
 
-- Claude Code, Codex and OpenCode binaries are fetched from the public npm
-  registry at build time and remain under their own upstream terms.
+- Claude Code and Codex binaries are fetched from the public npm registry at
+  build time and remain under their own upstream terms. OpenCode is not
+  bundled with the desktop builds.
 - `docker.io/esmln/cloudcli` on Docker Hub is a prebuilt snapshot of this
   same tree if you prefer pulling over building.
