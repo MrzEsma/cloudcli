@@ -31,7 +31,7 @@ const entries = fs.readFileSync(manifestPath, 'utf8').split('\n')
 
 let checked = 0;
 for (const { sha, file } of entries) {
-    const abs = path.join(OVERLAY, 'package', file);
+    const abs = path.join(OVERLAY, file);
     const digest = crypto.createHash('sha256').update(fs.readFileSync(abs)).digest('hex');
     if (digest !== sha) {
         console.error(`overlay manifest mismatch: ${file}`);
@@ -47,8 +47,8 @@ if (fs.existsSync(stockEntry) && !fs.existsSync(stockBackup)) {
 }
 
 for (const { file } of entries) {
-    const dst = path.join(PKG, file);
+    const dst = path.join(PKG, file.replace(/^package[\\/]/, ''));
     fs.mkdirSync(path.dirname(dst), { recursive: true });
-    fs.copyFileSync(path.join(OVERLAY, 'package', file), dst);
+    fs.copyFileSync(path.join(OVERLAY, file), dst);
 }
 console.log(`cloudcli overlay applied to ${PKG} (${checked} files, manifest verified)`);

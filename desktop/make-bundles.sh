@@ -138,34 +138,46 @@ add_runtime() {  # add_runtime <stage> <target>
     *.zip)
       python3 -c "import zipfile;zipfile.ZipFile('$WORK_DL/$dist').extractall('$stage/runtime')"
       ;;
-    *.tar.xz)
-      tar -xJf "$WORK_DL/$dist" -C "$stage/runtime" --strip-components=2 --wildcards '*/bin/node'
-      mkdir -p "$stage/runtime/bin"
-      [[ -f "$stage/runtime/node" ]] && mv "$stage/runtime/node" "$stage/runtime/bin/node" || true
-      ;;
-    *.tar.gz)
-      tar -xzf "$WORK_DL/$dist" -C "$stage/runtime" --strip-components=2 --wildcards '*/bin/node'
-      mkdir -p "$stage/runtime/bin"
-      [[ -f "$stage/runtime/node" ]] && mv "$stage/runtime/node" "$stage/runtime/bin/node" || true
+    *.tar.xz|*.tar.gz)
+      python3 - "$WORK_DL/$dist" "$stage/runtime" <<'PYT'
+import sys, tarfile
+with tarfile.open(sys.argv[1]) as t:
+    member = next(m for m in t.getmembers() if m.name.endswith('/bin/node'))
+    member.name = 'bin/node'
+    t.extract(member, sys.argv[2], filter='data')
+PYT
       ;;
   esac
   # Only the binary ships — no npm/corepack needed at user time.
   rm -rf "$stage/runtime/lib" "$stage/runtime/include" "$stage/runtime/share" 2>/dev/null || true
 }
 
-add_mingit() {  # Windows bundles ship portable git+bash for the agent shell tools
+add_mingit() {  # Windows bundles ship PortableGit: git + bash for the agent shell tools
   local stage="$1"
-  echo "  [git] MinGit (bash for Claude's shell tools)"
+  echo "  [git] PortableGit (git + bash for Claude's shell tools)"
+  local seven="$WORK_DL/7zz"
+  if [[ ! -x "$seven" ]]; then
+    local seven_v
+    for seven_v in 7z2501 7z2408 7z2407 7z2406; do
+      if curl -fsf --retry 2 -o "$WORK_DL/7zz.tar.xz" "https://www.7-zip.org/a/$seven_v-linux-x64.tar.xz"; then break; fi
+    done
+    python3 -c "import tarfile,os;tarfile.open('$WORK_DL/7zz.tar.xz').extractall('$WORK_DL/7zz-unpacked',filter='data');os.replace('$WORK_DL/7zz-unpacked/7zz','$seven')"
+    chmod +x "$seven"
+  fi
   local url
-  url="$(curl -fsSL --retry 3 "https://api.github.com/repos/git-for-windows/git/releases/latest" \
-    | python3 -c "import json,sys
-assets=json.load(sys.stdin)['assets']
-print(next(a['browser_download_url'] for a in assets if a['name'].endswith('MinGit-64-bit.zip')))")"
-  curl -fsSL --retry 3 -o "$WORK_DL/mingit.zip" "$url"
-  mkdir -p "$stage/runtime/git"
-  python3 -c "import zipfile;zipfile.ZipFile('$WORK_DL/mingit.zip').extractall('$stage/runtime/git')"
-  [[ -f "$stage/runtime/git/usr/bin/bash.exe" ]] || [[ -f "$stage/runtime/git/bin/bash.exe" ]] || {
-    echo "MinGit has no bash — Claude shell tools would be broken" >&2; exit 1; }
+  url="$(curl -fsSL --retry 3 "https://api.github.com/repos/git-for-windows/git/releases?per_page=15" | python3 -c '
+import json,sys
+for rel in json.load(sys.stdin):
+    if rel.get("draft") or rel.get("prerelease"): continue
+    for a in rel["assets"]:
+        if a["name"].startswith("PortableGit-") and a["name"].endswith("-64-bit.7z.exe"):
+            print(a["browser_download_url"]); raise SystemExit
+')"
+  [[ -n "$url" ]] || { echo "PortableGit asset not found" >&2; exit 1; }
+  curl -fsSL --retry 3 -o "$WORK_DL/portablegit.7z.exe" "$url"
+  "$seven" x -y -o"$stage/runtime/git" "$WORK_DL/portablegit.7z.exe" >/dev/null
+  [[ -f "$stage/runtime/git/usr/bin/bash.exe" && -f "$stage/runtime/git/cmd/git.exe" ]] || {
+    echo "PortableGit missing bash/git — Claude shell tools would be broken" >&2; exit 1; }
 }
 
 zip_stage() {  # zip_stage <stage-dir-parent> <stage-name> <out-zip>

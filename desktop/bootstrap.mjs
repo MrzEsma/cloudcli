@@ -98,24 +98,29 @@ function openBrowser(url) {
     }
 }
 
-function firstLogin() {
-    // Generated once; LOGIN.txt survives restarts so the user can find it
-    // again. If they change the password inside the UI, the file is stale —
-    // noted in the file itself.
-    if (fs.existsSync(LOGIN_FILE)) {
-        const match = fs.readFileSync(LOGIN_FILE, 'utf8').match(/admin\s*[\/:]?\s*([A-Za-z0-9]{8,})/) ||
-            fs.readFileSync(LOGIN_FILE, 'utf8').match(/([A-Za-z0-9]{10,})/);
-        if (match) return { username: 'admin', password: match[1] };
-    }
+const CREDENTIALS_FILE = path.join(DATA, 'credentials.json');
+
+function firstLogin(port) {
+    // Generated once and reused; LOGIN.txt survives restarts so the user can
+    // find it again. If they change the password inside the UI, both files
+    // are stale — noted inside LOGIN.txt itself.
+    try {
+        const saved = JSON.parse(fs.readFileSync(CREDENTIALS_FILE, 'utf8'));
+        if (saved && saved.username && saved.password) {
+            return { username: saved.username, password: saved.password };
+        }
+    } catch { /* first run */ }
+    const username = 'admin';
     const password = crypto.randomBytes(12).toString('base64url').replace(/[-_]/g, '').slice(0, 14) ||
         crypto.randomBytes(8).toString('hex');
     fs.mkdirSync(DATA, { recursive: true });
-    const text = [
+    fs.writeFileSync(CREDENTIALS_FILE, JSON.stringify({ username, password }, null, 2) + '\n', { mode: 0o600 });
+    fs.writeFileSync(LOGIN_FILE, [
         'CloudCLI — اطلاعات ورود / Login',
         '=================================',
         '',
-        'آدرس / Address:  http://127.0.0.1:PORT',
-        'نام کاربری / Username: admin',
+        `آدرس / Address:  http://127.0.0.1:${port}`,
+        `نام کاربری / Username: ${username}`,
         `رمز عبور / Password: ${password}`,
         '',
         'این رمز فقط روی همین کامپیوتر شماست و در فایل‌های همین پوشه ذخیره شده.',
@@ -124,9 +129,8 @@ function firstLogin() {
         'This password exists only on this computer. If you change it inside',
         'the app, the new one applies and this file becomes outdated.',
         '',
-    ].join('\n');
-    fs.writeFileSync(LOGIN_FILE, text.replace('PORT', '__PORT__'), { mode: 0o600 });
-    return { username: 'admin', password };
+    ].join('\n'), { mode: 0o600 });
+    return { username, password };
 }
 
 function writeSonioxConfig() {
@@ -251,11 +255,7 @@ async function main() {
     await runInit('init-claude-provider.mjs', env);
 
     say('• ساخت کاربر اول / creating your first login …');
-    const { username, password } = firstLogin();
-    if (fs.existsSync(LOGIN_FILE)) {
-        fs.writeFileSync(LOGIN_FILE,
-            fs.readFileSync(LOGIN_FILE, 'utf8').replace('__PORT__', String(port)));
-    }
+    const { username, password } = firstLogin(port);
     env.CLOUDCLI_ADMIN_USERNAME = username;
     env.CLOUDCLI_ADMIN_PASSWORD = password;
     await runInit('init-cloudcli-admin.mjs', env);
