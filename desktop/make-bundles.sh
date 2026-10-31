@@ -95,14 +95,25 @@ PY
   find "$nm/@openai" -maxdepth 1 -name 'codex-*' ! -name "$codex_dir" ! -name 'codex-sdk' -exec rm -rf {} +
   find "$nm/@openai/codex-sdk/node_modules/@openai" -maxdepth 1 -name 'codex-*' ! -name "$codex_dir" -exec rm -rf {} + 2>/dev/null || true
 
-  local oc_ver; oc_ver="$(lock_version "opencode-$pf_npm-$arch_npm")"
-  echo "  [platform] opencode-$pf_npm-$arch_npm@$oc_ver"
-  fetch_pkg "opencode-$pf_npm-$arch_npm" "opencode-$pf_npm-$arch_npm@$oc_ver" "$nm"
+  # opencode's platform packages are named "windows", not "win32" (upstream
+  # quirk); prune ONLY the known platform names — 'opencode-*' would also
+  # match the main package 'opencode-ai'.
+  local oc_pf; [[ "$pf_npm" == win32 ]] && oc_pf=windows || oc_pf="$pf_npm"
+  local oc_pkg="opencode-$oc_pf-$arch_npm"
+  local oc_ver; oc_ver="$(lock_version "$oc_pkg")"
+  [[ -n "$oc_ver" ]] || { echo "no lock entry for $oc_pkg" >&2; exit 1; }
+  echo "  [platform] $oc_pkg@$oc_ver"
+  fetch_pkg "$oc_pkg" "$oc_pkg@$oc_ver" "$nm"
   local oc_bin_src
-  oc_bin_src="$(find "$nm/opencode-$pf_npm-$arch_npm" -type f \( -name 'opencode.exe' -o -name 'opencode' \) | head -1)"
+  oc_bin_src="$(find "$nm/$oc_pkg" -type f \( -name 'opencode.exe' -o -name 'opencode' \) | head -1)"
+  [[ -n "$oc_bin_src" ]] || { echo "no binary inside $oc_pkg" >&2; exit 1; }
   mkdir -p "$nm/opencode-ai/bin"
   cp -f "$oc_bin_src" "$nm/opencode-ai/bin/opencode.exe"
-  find "$nm" -maxdepth 1 -name 'opencode-*' ! -name "opencode-$pf_npm-$arch_npm" -exec rm -rf {} +
+  for oc_other in linux-x64 linux-arm64 linux-x64-baseline linux-x64-baseline-musl linux-arm64-musl \
+                  windows-x64 windows-x64-baseline windows-arm64 \
+                  darwin-x64 darwin-x64-baseline darwin-arm64; do
+    [[ "$oc_pkg" == "opencode-$oc_other" ]] || rm -rf "$nm/opencode-$oc_other"
+  done
   rm -rf "$nm/opencode-ai/postinstall.mjs"   # already applied; must not re-run for another platform
 
   local rg_ver; rg_ver="$(lock_version "@vscode/ripgrep-$pf_npm-$arch_npm")"

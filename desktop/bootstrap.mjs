@@ -192,8 +192,10 @@ async function main() {
         env.USERPROFILE = HOME;
         // Bundled portable git (agent shell tools) — prepend, never replace.
         const gitBin = [path.join(ROOT, 'runtime', 'git', 'cmd'), path.join(ROOT, 'runtime', 'git', 'bin')];
-        const bash = path.join(ROOT, 'runtime', 'git', 'bin', 'bash.exe');
-        if (fs.existsSync(bash)) env.CLAUDE_CODE_GIT_BASH_PATH = bash;
+        const bash = [path.join(ROOT, 'runtime', 'git', 'bin', 'bash.exe'),
+            path.join(ROOT, 'runtime', 'git', 'usr', 'bin', 'bash.exe')]
+            .find((candidate) => fs.existsSync(candidate));
+        if (bash) env.CLAUDE_CODE_GIT_BASH_PATH = bash;
         env.PATH = [...gitBin, path.join(ROOT, 'runtime'),
             path.join(nodeModules, '.bin'), env.PATH].join(path.delimiter);
     } else {
