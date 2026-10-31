@@ -30,8 +30,8 @@ node_dist_of() {
   case "$1" in
     linux-x64)      echo "node-v$NODE_VERSION-linux-x64.tar.xz";;
     win-x64)        echo "node-v$NODE_VERSION-win-x64.zip";;
-    darwin-arm64)   echo "node-v$NODE_VERSION-osx-arm64.tar.gz";;
-    darwin-x64)     echo "node-v$NODE_VERSION-osx-x64.tar.gz";;
+    darwin-arm64)   echo "node-v$NODE_VERSION-darwin-arm64.tar.gz";;
+    darwin-x64)     echo "node-v$NODE_VERSION-darwin-x64.tar.gz";;
   esac
 }
 
