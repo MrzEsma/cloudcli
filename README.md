@@ -12,6 +12,28 @@ registry. **Bring your own credentials** — nothing of the original
 installation's accounts, tokens or data is included, and nothing reports
 anywhere: your instance talks only to the AI providers you configure.
 
+## Desktop: one download, one double-click (Windows / macOS / Linux)
+
+No Docker, no Node install, no terminal. Build portable bundles and hand the ZIP
+to anyone:
+
+```bash
+bash desktop/make-bundles.sh all          # or: linux-x64 | win-x64 | darwin-arm64 | darwin-x64
+```
+
+Each `desktop/dist/cloudcli-desktop-<os>-<date>.zip` contains the whole app:
+the Node runtime for that OS, prebuilt dependencies, plugins, the overlay
+applied, portable git+bash (Windows) and double-click launchers
+(`Start-CloudCLI.bat` / `Start CloudCLI.command` / `start-cloudcli.sh`).
+The user extracts the ZIP, double-clicks, and the browser opens on the local
+app; the first login is written to `data/LOGIN.txt` inside the folder. All
+state lives in the folder (`data/`, `workspace/`) — deleting the folder
+uninstalls. The server binds to `127.0.0.1` only.
+
+Non-technical guide (Persian): `README-FA.md`. Windows chat runs Claude Code
+under ConPTY through the bundled Node — no bash needed on the machine; the
+bundled MinGit supplies bash for Claude's shell tools.
+
 ## Quickstart (Docker)
 
 ```bash

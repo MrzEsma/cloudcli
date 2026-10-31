@@ -22,6 +22,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { promises as fsp } from 'fs';
 import { randomUUID } from 'crypto';
 
@@ -469,6 +470,26 @@ function resolveTuiClaudeBinary(claudeConfigDir) {
     catch { /* no iclaude installs: fall through */ }
     return 'claude';
 }
+// Desktop (Windows) bundles ship no bash: resolve the Claude Code cli.js
+// entry and run it through this server's own Node binary under ConPTY.
+// Order: explicit override → sibling package next to this one → cwd layout.
+function resolveTuiClaudeScript() {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const pkgRoot = path.resolve(here, '../../..');
+    const appRoot = path.resolve(pkgRoot, '../..');
+    const candidates = [
+        process.env.CLOUDCLI_CLAUDE_ENTRY_JS,
+        path.join(appRoot, 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js'),
+        path.join(pkgRoot, 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js'),
+        path.join(process.cwd(), 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js'),
+    ].filter(Boolean);
+    for (const candidate of candidates) {
+        if (fs.existsSync(candidate)) {
+            return candidate;
+        }
+    }
+    throw new Error('Claude Code cli.js entry not found (set CLOUDCLI_CLAUDE_ENTRY_JS).');
+}
 async function spawnTuiSession({ providerSessionId, projectPath, resume, permissionMode, claudeConfigDir, forwardModel }) {
     // Forward the GUI's permission selection so tool use behaves the same as
     // the stock SDK path; unset/default keeps the TUI's own default mode.
@@ -479,19 +500,42 @@ async function spawnTuiSession({ providerSessionId, projectPath, resume, permiss
         ? ` --model ${forwardModel}`
         : '';
     const claudeBin = resolveTuiClaudeBinary(claudeConfigDir);
-    const claudeCommand = resume
-        ? `${claudeBin} --resume "${providerSessionId}"${modeArg}${modelArg}`
-        : `${claudeBin} --session-id "${providerSessionId}"${modeArg}${modelArg}`;
     let ptyProcess;
     try {
-        ptyProcess = pty.spawn('bash', ['-c', claudeCommand], {
-            name: 'xterm-256color',
-            cols: 120,
-            rows: 40,
-            cwd: projectPath,
-            env: buildPtyEnv(claudeConfigDir),
-        });
-        debugLog('spawn', { claudeCommand, pid: ptyProcess.pid, projectPath });
+        if (process.platform === 'win32') {
+            // No bash on a stock Windows install (Desktop bundle): run the
+            // CLI entry through this server's own Node binary under ConPTY.
+            // Argument values are ids and validated catalog names, so an argv
+            // array carries them without any shell re-parsing.
+            const claudeScript = resolveTuiClaudeScript();
+            const claudeArgs = [
+                resume ? '--resume' : '--session-id',
+                providerSessionId,
+                ...(permissionMode ? ['--permission-mode', permissionMode] : []),
+                ...(modelArg ? ['--model', forwardModel] : []),
+            ];
+            ptyProcess = pty.spawn(process.execPath, [claudeScript, ...claudeArgs], {
+                name: 'xterm-256color',
+                cols: 120,
+                rows: 40,
+                cwd: projectPath,
+                env: buildPtyEnv(claudeConfigDir),
+            });
+            debugLog('spawn', { claudeScript, claudeArgs, pid: ptyProcess.pid, projectPath });
+        }
+        else {
+            const claudeCommand = resume
+                ? `${claudeBin} --resume "${providerSessionId}"${modeArg}${modelArg}`
+                : `${claudeBin} --session-id "${providerSessionId}"${modeArg}${modelArg}`;
+            ptyProcess = pty.spawn('bash', ['-c', claudeCommand], {
+                name: 'xterm-256color',
+                cols: 120,
+                rows: 40,
+                cwd: projectPath,
+                env: buildPtyEnv(claudeConfigDir),
+            });
+            debugLog('spawn', { claudeCommand, pid: ptyProcess.pid, projectPath });
+        }
     }
     catch (error) {
         throw new Error(`Failed to spawn Claude Code: ${error instanceof Error ? error.message : String(error)}`);

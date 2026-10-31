@@ -1,4 +1,4 @@
-e103fbe8be6115e22c12f894e6202232fe5c33dbed98bc25f1969db09101a347  package/dist-server/server/claude-interactive.js
+a20309107aaf2e1b92917ac9e9004385cb7419e5a14567a490895b444a81baf9  package/dist-server/server/claude-interactive.js
 b083bbead8c49af7572dde78df76e07375713a39b58d533fc838810d1f866651  package/dist-server/server/claude-sdk.js
 466766c012afb6d5c9d33bffa6c93929c7338f19336133a74ceab329076edfb3  package/dist-server/server/index.js
 f65c109bc0b3399853d55a1740955e88be4bc0839069e3472ada0f5383ebc19c  package/dist-server/server/modules/database/migrations.js
