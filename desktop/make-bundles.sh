@@ -240,16 +240,22 @@ for rel in json.load(sys.stdin):
          "$g/ucrt64/share/doc" "$g/ucrt64/lib/tcl8"* "$g/ucrt64/share/zoneinfo" \
          "$g/ucrt64/share/git-gui" "$g/usr/share/git-gui" \
          "$g/cmd/git-gui.exe" "$g/cmd/gitk.exe" 2>/dev/null || true
-  rm -f "$g/usr/bin/"{vi,vim,view,ex,rvim,rview,vimdiff,vimtutor} \
+  rm -f "$g/usr/bin/"{vi,vim,view,ex,rvim,rview,vimdiff,vimtutor}{,.exe} \
         "$g/usr/bin/"{getconf.exe,mintty.exe,nano.exe,openssl.exe,perl.exe,perl5.*.exe,pldd.exe,ssp.exe} \
         "$g/usr/bin/gawk-"*.exe 2>/dev/null || true
-  # GUI/difftool + GCM stacks (scalar, git-gui, credential manager, .NET dlls)
-  find "$g/ucrt64/bin" -maxdepth 1 -type f \( -name 'Avalonia*' -o -name 'SkiaSharp*' \
-       -o -name 'HarfBuzzSharp*' -o -name 'MicroCom*' -o -name 'Microsoft.*' -o -name 'System.*' \
-       -o -name 'GitHub.dll' -o -name 'GitLab.dll' -o -name 'Atlassian*' \
-       -o -name 'git-credential-manager*' -o -name 'scalar.exe' -o -name 'pdftotext.exe' \
-       -o -name 'gitk*' -o -name 'msalruntime.dll' \) -delete 2>/dev/null || true
-  rm -rf "$g/ucrt64/libexec/git-core"/git-gui* "$g/ucrt64/libexec/git-core"/gitk* 2>/dev/null || true
+  # GUI/difftool + GCM stacks (scalar, git-gui, credential manager, .NET dlls).
+  # PortableGit >= 2.52 duplicates the whole stack into libexec/git-core and
+  # prefixes some DLLs with lib (libSkiaSharp, libHarfBuzzSharp, av_libglesv2).
+  for d in "$g/ucrt64/bin" "$g/ucrt64/libexec/git-core" "$g/cmd"; do
+    find "$d" -maxdepth 1 -type f \( -name '*Avalonia*' -o -name '*SkiaSharp*' \
+         -o -name '*HarfBuzzSharp*' -o -name '*MicroCom*' -o -name 'Microsoft.*' -o -name 'System.*' \
+         -o -name 'GitHub.dll' -o -name 'GitLab.dll' -o -name 'Atlassian*' \
+         -o -name 'git-credential-manager*' -o -name 'scalar.exe' -o -name 'pdftotext.exe' \
+         -o -name 'gitk*' -o -name 'msalruntime.dll' -o -name 'av_libglesv2.dll' \
+         -o -name 'tig.exe' \) -delete 2>/dev/null || true
+  done
+  rm -rf "$g/ucrt64/doc" \
+         "$g/ucrt64/libexec/git-core"/git-gui* "$g/ucrt64/libexec/git-core"/gitk* 2>/dev/null || true
   # niche network/serving subcommands (github/gitlab remotes use remote-https)
   for exe in git-remote-ftp git-remote-ftps git-imap-send git-daemon \
              git-http-backend git-http-push git-http-fetch; do
