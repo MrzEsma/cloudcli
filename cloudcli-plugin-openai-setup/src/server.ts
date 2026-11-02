@@ -1,7 +1,10 @@
+import { execFile, spawn as spawnChildProcess } from 'node:child_process';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
 
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 
@@ -11,18 +14,8 @@ const DEFAULT_MODELS: Record<CodexProvider, string> = {
   openai: 'gpt-5.6-sol',
   hooshcode: 'gpt-5.6-sol',
 };
-const SUPPORTED_MODELS: Record<CodexProvider, Set<string>> = {
-  openai: new Set([
-    'gpt-5.6-sol',
-    'gpt-5.6-terra',
-    'gpt-5.6-luna',
-    'gpt-5.5',
-    'gpt-5.4',
-    'gpt-5.4-mini',
-  ]),
-  hooshcode: new Set(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']),
-};
 const SUPPORTED_PROVIDERS = new Set(['openai', 'hooshcode', 'hooshcode_claude']);
+const execFileAsync = promisify(execFile);
 const OPENAI_MODELS_URL = 'https://api.openai.com/v1/models';
 const HOOSH_CODE_BASE_URL = (process.env.CODEX_PROXY_BASE_URL || 'https://claude.flearning.ir/backend-api/codex').replace(/\/$/, '');
 const HOOSH_CODE_MODELS_URL = `${HOOSH_CODE_BASE_URL}/models`;
@@ -230,11 +223,13 @@ function readJson(pathname: string): Record<string, unknown> {
   }
 }
 
+const MODEL_SLUG_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/;
+
 function readModel(configPath: string, provider: CodexProvider = 'openai'): string {
   try {
     const match = fs.readFileSync(configPath, 'utf8').match(/^model\s*=\s*"([^"]+)"/m);
     const model = match?.[1] || '';
-    return SUPPORTED_MODELS[provider].has(model) ? model : DEFAULT_MODELS[provider];
+    return MODEL_SLUG_PATTERN.test(model) ? model : DEFAULT_MODELS[provider];
   } catch {
     return DEFAULT_MODELS[provider];
   }
@@ -321,7 +316,14 @@ function readManagedConnectorBlock(configPath: string): string {
 function writeProviderConfig(paths: SetupPaths, model: string, provider: CodexProvider, apiKey = ''): void {
   const connectorBlock = readManagedConnectorBlock(paths.configPath);
   const proxyBlock = readProxyBlock(paths.configPath);
-  const lines = [...commonConfig(model), `model_provider = ${tomlString(provider)}`, ''];
+  const lines = [
+    ...commonConfig(model),
+    `model_provider = ${tomlString(provider)}`,
+    '',
+    '[features]',
+    'api_key_model_discovery = true',
+    '',
+  ];
   if (provider === 'hooshcode') {
     const storedKey = apiKey || readStoredApiKey(paths.authPath);
     if (!storedKey) throw new SetupError('کلید API هوش کد لازم است.');
@@ -329,6 +331,7 @@ function writeProviderConfig(paths: SetupPaths, model: string, provider: CodexPr
       '[model_providers.hooshcode]',
       'name = "Hoosh Code"',
       `base_url = ${tomlString(HOOSH_CODE_BASE_URL)}`,
+      `model_catalog_url = ${tomlString(HOOSH_CODE_MODELS_URL)}`,
       `experimental_bearer_token = ${tomlString(storedKey)}`,
       'wire_api = "responses"',
       'supports_websockets = true',
@@ -358,11 +361,15 @@ function readClaudeSettings(paths: ClaudeSetupPaths): Record<string, unknown> {
 // else. Unrelated settings keys always survive.
 function writeClaudeProxyToken(token: string, paths: ClaudeSetupPaths): void {
   const settings = readClaudeSettings(paths);
-  settings.env = {
-    ...(settings.env && typeof settings.env === 'object' ? settings.env : {}),
+  const env: Record<string, unknown> = {
+    ...(settings.env && typeof settings.env === 'object' ? settings.env as Record<string, unknown> : {}),
     ANTHROPIC_AUTH_TOKEN: token,
     ANTHROPIC_BASE_URL: CLAUDE_PROXY_BASE_URL,
   };
+  // The proxy token and the user's own Claude account login are mutually
+  // exclusive ways to authenticate Claude Code; the newest one wins.
+  delete env.CLAUDE_CODE_OAUTH_TOKEN;
+  settings.env = env;
   writePrivateFile(paths.settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
 }
 
@@ -390,7 +397,7 @@ function writeClaudeMarker(paths: ClaudeSetupPaths): void {
 type ClaudeSetupStatus = {
   configured: boolean;
   managedByTenant: boolean;
-  method: 'iclaude' | 'api_key' | 'none';
+  method: 'iclaude' | 'oauth' | 'credentials' | 'api_key' | 'none';
   managedTeam: boolean;
 };
 
@@ -419,17 +426,323 @@ function claudeStatus(paths: ClaudeSetupPaths): ClaudeSetupStatus {
   const env = settings.env && typeof settings.env === 'object'
     ? settings.env as Record<string, unknown>
     : {};
+  const oauthToken = typeof env.CLAUDE_CODE_OAUTH_TOKEN === 'string' && env.CLAUDE_CODE_OAUTH_TOKEN.trim() !== '';
+  const proxyToken = typeof env.ANTHROPIC_AUTH_TOKEN === 'string' && env.ANTHROPIC_AUTH_TOKEN.trim() !== '';
+  // ~/.claude/.credentials.json appears when Claude Code itself completed a
+  // full login (e.g. someone ran `claude` in the terminal tab).
+  const hasCredentials = fs.existsSync(path.join(paths.claudeDir, '.credentials.json'));
   // Both the tenant (this plugin) and the platform bootstrap write the same
   // marker; ownership is decided by its managedBy field, not its existence.
   const marker = readJson(paths.markerPath);
+  const method: ClaudeSetupStatus['method'] = oauthToken
+    ? 'oauth'
+    : hasCredentials
+      ? 'credentials'
+      : proxyToken
+        ? 'api_key'
+        : 'none';
   return {
-    configured: typeof env.ANTHROPIC_AUTH_TOKEN === 'string' && env.ANTHROPIC_AUTH_TOKEN.trim() !== '',
+    configured: method !== 'none',
     managedByTenant: marker.managedBy === 'tenant',
-    method: typeof env.ANTHROPIC_AUTH_TOKEN === 'string' && env.ANTHROPIC_AUTH_TOKEN.trim() !== ''
-      ? 'api_key'
-      : 'none',
+    method,
     managedTeam: false,
   };
+}
+
+
+// ---- Claude Code account login (subscription, interactive) ------------------
+// `claude setup-token` runs Anthropic's own OAuth flow: the user's browser
+// opens the authorize page and, on success, the CLI prints a 1-year inference
+// token. We run it in a pseudo terminal, capture that token server-side, and
+// store it in ~/.claude/settings.json `env` (Claude Code applies that block to
+// every session) so the interactive chat tabs bill the user's own claude.ai
+// subscription. The token never reaches the browser side.
+
+type PtyProcessLike = {
+  write(data: string): void;
+  kill(signal?: string): void;
+  onData(listener: (data: string) => void): { dispose(): void };
+  onExit(listener: (event: { exitCode: number; signal?: number }) => void): { dispose(): void };
+};
+type PtyModuleLike = {
+  spawn(file: string, args: string[], options: Record<string, unknown>): PtyProcessLike;
+};
+
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+
+function walkUpModuleRoots(start: string = MODULE_DIR): string[] {
+  const roots: string[] = [];
+  let dir = path.resolve(start);
+  for (let depth = 0; depth < 16; depth += 1) {
+    roots.push(dir);
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return roots;
+}
+
+function loadPtyModule(): PtyModuleLike | null {
+  const requireModule = createRequire(import.meta.url);
+  const candidates: Array<() => unknown> = [() => requireModule('node-pty')];
+  for (const root of walkUpModuleRoots()) {
+    const absolute = path.join(root, 'node_modules', 'node-pty');
+    if (fs.existsSync(absolute)) candidates.push(() => requireModule(absolute));
+  }
+  for (const load of candidates) {
+    try {
+      const candidate = load();
+      if (candidate && typeof candidate === 'object' && typeof (candidate as PtyModuleLike).spawn === 'function') {
+        return candidate as PtyModuleLike;
+      }
+    } catch { /* try the next root */ }
+  }
+  return null;
+}
+
+// Desktop bundles ship the CLI as <app>/node_modules/@anthropic-ai/claude-code
+// /cli.js; resolve it by walking up from the plugin directory (the plugin is
+// synced into <app>/data/home/.claude-code-ui/plugins). Falls back to `claude`
+// on PATH for non-desktop installs.
+function resolveClaudeCliRunner(): { command: string; args: string[] } {
+  for (const root of walkUpModuleRoots()) {
+    const cliJs = path.join(root, 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
+    if (fs.existsSync(cliJs)) {
+      return { command: process.execPath, args: [cliJs, 'setup-token'] };
+    }
+  }
+  return { command: 'claude', args: ['setup-token'] };
+}
+
+const ANSI_PATTERN = /\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007]*(?:\u0007|\u001b\\)|\u001b[@-Z\\-_]/g;
+
+function stripAnsiCodes(text: string): string {
+  return text.replace(ANSI_PATTERN, '');
+}
+
+// The CLI marks onboarding complete only after its walkthrough; pre-marking the
+// flags lets setup-token jump straight to the OAuth flow (same trick the chat
+// runtime uses for the TUI).
+function premarkClaudeOnboarding(homeDir: string): void {
+  const configPath = path.join(homeDir, '.claude.json');
+  let config: Record<string, unknown> = {};
+  try {
+    config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } catch { /* fresh home */ }
+  if (!config || typeof config !== 'object') config = {};
+  if (config.hasCompletedOnboarding === true && config.lastOnboardingVersion) return;
+  config.hasCompletedOnboarding = true;
+  config.lastOnboardingVersion = config.lastOnboardingVersion || '2.0.76';
+  fs.mkdirSync(path.dirname(configPath), { recursive: true, mode: 0o700 });
+  writePrivateFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+}
+
+function writeClaudeOauthToken(token: string, paths: ClaudeSetupPaths): void {
+  const settings = readClaudeSettings(paths);
+  const env: Record<string, unknown> = {
+    ...(settings.env && typeof settings.env === 'object' ? settings.env as Record<string, unknown> : {}),
+    CLAUDE_CODE_OAUTH_TOKEN: token,
+  };
+  // The account login and the Hoosh Code proxy token are mutually exclusive
+  // ways to authenticate Claude Code; the newest one wins.
+  delete env.ANTHROPIC_AUTH_TOKEN;
+  delete env.ANTHROPIC_BASE_URL;
+  settings.env = env;
+  writePrivateFile(paths.settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
+  writePrivateFile(paths.markerPath, `${JSON.stringify({
+    managedBy: 'tenant',
+    provider: 'claude_oauth',
+    updatedAt: new Date().toISOString(),
+  })}\n`);
+}
+
+function removeClaudeOauthToken(paths: ClaudeSetupPaths): void {
+  if (!fs.existsSync(paths.settingsPath)) return;
+  const settings = readClaudeSettings(paths);
+  if (!settings.env || typeof settings.env !== 'object') return;
+  const env = settings.env as Record<string, unknown>;
+  if (!Object.prototype.hasOwnProperty.call(env, 'CLAUDE_CODE_OAUTH_TOKEN')) return;
+  delete env.CLAUDE_CODE_OAUTH_TOKEN;
+  if (Object.keys(env).length === 0) delete settings.env;
+  writePrivateFile(paths.settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
+  fs.rmSync(paths.markerPath, { force: true });
+}
+
+type ClaudeLoginPhase = 'starting' | 'waiting' | 'authorized' | 'error' | 'cancelled';
+type ClaudeLoginChild = { kill(): void; write(data: string): void } | null;
+type ClaudeLogin = {
+  id: string;
+  phase: ClaudeLoginPhase;
+  url: string | null;
+  message: string | null;
+  startedAt: number;
+  buffer: string;
+  child: ClaudeLoginChild;
+  pty: boolean;
+  timer: ReturnType<typeof setTimeout> | null;
+  done: boolean;
+};
+
+// 2.1.110 prints https://claude.com/cai/oauth/authorize?... (older builds: claude.ai)
+const CLAUDE_LOGIN_URL_PATTERN = /https:\/\/claude\.(?:ai|com)\/(?:[a-z]+\/)?oauth\/authorize\?[^\s"'<>]+/;
+const CLAUDE_LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
+let claudeLogin: ClaudeLogin | null = null;
+
+function finishClaudeLogin(login: ClaudeLogin, phase: ClaudeLoginPhase, message: string | null = null): void {
+  if (login.done) return;
+  login.done = true;
+  login.phase = phase;
+  login.message = message;
+  if (login.timer) clearTimeout(login.timer);
+  login.timer = null;
+}
+
+function killClaudeLoginChild(login: ClaudeLogin): void {
+  try { login.child?.kill(); } catch { /* already gone */ }
+  login.child = null;
+}
+
+function openBrowserForLogin(url: string): void {
+  try {
+    const command = process.platform === 'win32' ? 'cmd.exe' : process.platform === 'darwin' ? 'open' : 'xdg-open';
+    const args = process.platform === 'win32' ? ['/c', 'start', '', url] : [url];
+    spawnChildProcess(command, args, { detached: true, stdio: 'ignore' })
+      .on('error', () => { /* headless host — the URL is rendered in the tab */ })
+      .unref();
+  } catch { /* the URL is rendered in the tab as a fallback */ }
+}
+
+function extractLoginToken(buffer: string): string | null {
+  const hintAt = buffer.indexOf('Your OAuth token');
+  if (hintAt < 0) return null;
+  const match = buffer.slice(hintAt).match(/\(valid for 1 year\):\s*([\x21-\x7e]{64,512})/);
+  return match?.[1] ?? null;
+}
+
+function resolveLoginWorkspace(homeDir: string): string {
+  for (const root of walkUpModuleRoots()) {
+    const candidate = path.join(root, 'workspace');
+    try {
+      if (fs.statSync(candidate).isDirectory()) return candidate;
+    } catch { /* keep walking */ }
+  }
+  return homeDir;
+}
+
+function startClaudeLogin(homeDir: string, claudePaths: ClaudeSetupPaths): ClaudeLogin {
+  if (claudeLogin && !claudeLogin.done && (claudeLogin.phase === 'starting' || claudeLogin.phase === 'waiting')) {
+    throw new SetupError('یک تلاش ورود دیگر در جریان است؛ اول آن را لغو کنید.', 409);
+  }
+  premarkClaudeOnboarding(homeDir);
+  const runner = resolveClaudeCliRunner();
+  const login: ClaudeLogin = {
+    id: `login-${Date.now().toString(36)}`,
+    phase: 'starting',
+    url: null,
+    message: null,
+    startedAt: Date.now(),
+    buffer: '',
+    child: null,
+    pty: false,
+    timer: null,
+    done: false,
+  };
+  claudeLogin = login;
+
+  const childEnv: Record<string, string> = {};
+  const passthrough = new Set(['path', 'home', 'userprofile', 'appdata', 'localappdata', 'systemroot', 'temp', 'tmp', 'pathext', 'comspec']);
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined && passthrough.has(key.toLowerCase())) childEnv[key] = value;
+  }
+  childEnv.TERM = 'xterm-256color';
+  childEnv.NO_COLOR = '1';
+  childEnv.DISABLE_AUTOUPDATER = '1';
+
+  const handleOutput = (raw: string) => {
+    if (login.done) return;
+    login.buffer = (login.buffer + stripAnsiCodes(raw)).slice(-64 * 1024);
+    if (!login.url) {
+      const match = login.buffer.match(CLAUDE_LOGIN_URL_PATTERN);
+      if (match) {
+        login.url = match[0];
+        login.phase = 'waiting';
+        openBrowserForLogin(login.url);
+      }
+    }
+    const token = extractLoginToken(login.buffer);
+    if (token) {
+      try {
+        writeClaudeOauthToken(token, claudePaths);
+      } catch (error) {
+        finishClaudeLogin(login, 'error', `ذخیره توکن ناموفق بود: ${messageFor(error)}`);
+        killClaudeLoginChild(login);
+        return;
+      }
+      finishClaudeLogin(login, 'authorized');
+      killClaudeLoginChild(login);
+    }
+  };
+
+  const ptyModule = loadPtyModule();
+  if (ptyModule) {
+    const proc = ptyModule.spawn(runner.command, runner.args, {
+      name: 'xterm-256color',
+      cols: 500,
+      rows: 60,
+      cwd: resolveLoginWorkspace(homeDir),
+      env: childEnv,
+      encoding: 'utf8',
+    });
+    login.child = proc;
+    login.pty = true;
+    proc.onData(handleOutput);
+    proc.onExit(({ exitCode }) => {
+      if (login.done || login.phase === 'authorized') return;
+      finishClaudeLogin(login, 'error', `فرآیند ورود بسته شد (کد ${exitCode}). دوباره تلاش کنید.`);
+    });
+  } else {
+    const proc = spawnChildProcess(runner.command, runner.args, {
+      cwd: resolveLoginWorkspace(homeDir),
+      env: childEnv,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    login.child = {
+      kill: () => { try { proc.kill(); } catch { /* already gone */ } },
+      write: (data: string) => { proc.stdin?.write(data); },
+    };
+    login.pty = false;
+    proc.stdout?.on('data', (chunk: Buffer) => handleOutput(chunk.toString('utf8')));
+    proc.stderr?.on('data', (chunk: Buffer) => handleOutput(chunk.toString('utf8')));
+    proc.once('close', (exitCode) => {
+      if (login.done || login.phase === 'authorized') return;
+      finishClaudeLogin(login, 'error', `فرآیند ورود بسته شد (کد ${exitCode ?? 0}). دوباره تلاش کنید.`);
+    });
+    proc.once('error', (error) => {
+      if (login.done) return;
+      finishClaudeLogin(login, 'error', `اجرای Claude ممکن نشد: ${error.message}`);
+    });
+  }
+
+  login.timer = setTimeout(() => {
+    killClaudeLoginChild(login);
+    finishClaudeLogin(login, 'error', 'مهلت ورود (۵ دقیقه) تمام شد؛ دوباره تلاش کنید.');
+  }, CLAUDE_LOGIN_TIMEOUT_MS);
+  return login;
+}
+
+function submitClaudeLoginCode(id: string, code: string): ClaudeLogin {
+  const login = claudeLogin;
+  if (!login || login.id !== id) throw new SetupError('این درخواست ورود پیدا نشد.', 404);
+  if (login.done) throw new SetupError('این درخواست ورود پایان یافته است.', 409);
+  if (login.phase !== 'waiting' || !login.child) throw new SetupError('هنوز نوبت وارد کردن کد نیست.', 409);
+  const trimmed = code.trim();
+  if (!/^[\x21-\x7e]{4,128}$/.test(trimmed)) throw new SetupError('کد واردشده معتبر به نظر نمی‌رسد.', 400);
+  try {
+    login.child.write(login.pty ? `${trimmed}\r` : `${trimmed}\n`);
+  } catch (error) {
+    finishClaudeLogin(login, 'error', `ارسال کد ناموفق بود: ${messageFor(error)}`);
+  }
+  return login;
 }
 
 function snapshotFile(pathname: string): Buffer | null {
@@ -507,7 +820,7 @@ function validateKeyShape(apiKey: unknown): string {
 
 function validateModel(model: unknown, provider: CodexProvider): string {
   const normalized = typeof model === 'string' ? model.trim() : DEFAULT_MODELS[provider];
-  if (!SUPPORTED_MODELS[provider].has(normalized)) throw new SetupError('مدل انتخاب‌شده برای این ارائه‌دهنده پشتیبانی نمی‌شود.');
+  if (!MODEL_SLUG_PATTERN.test(normalized)) throw new SetupError('مدل انتخاب‌شده معتبر نیست.');
   return normalized;
 }
 
@@ -515,6 +828,75 @@ function validateProvider(provider: unknown): Provider {
   const normalized = typeof provider === 'string' ? provider.trim() : 'openai';
   if (!SUPPORTED_PROVIDERS.has(normalized)) throw new SetupError('نوع اتصال پشتیبانی نمی‌شود.');
   return normalized as Provider;
+}
+
+
+// ---- Codex model catalog (token-scoped) ------------------------------------
+// Fetches the models the saved key actually unlocks and mirrors them into
+// ~/.codex/models_cache.json — the exact file the chat model picker reads as
+// its fallback when `codex debug models` cannot answer (0.110 has no such
+// subcommand). Shapes accepted: the codex catalog ({models:[{slug,...}]}),
+// the OpenAI list ({data:[{id}]}) and a bare array of ids.
+
+type CodexCatalogRecord = {
+  slug: string;
+  display_name?: string;
+  description?: string;
+  visibility?: string;
+  supported_in_api?: boolean;
+  priority?: number;
+};
+
+async function fetchCodexCatalog(provider: CodexProvider, apiKey: string): Promise<Array<Record<string, unknown>>> {
+  const url = provider === 'hooshcode' ? HOOSH_CODE_MODELS_URL : OPENAI_MODELS_URL;
+  const headers: Record<string, string> = { Authorization: `Bearer ${apiKey}` };
+  if (provider === 'hooshcode') headers['x-openai-actor-authorization'] = 'enabled';
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PROVIDER_VALIDATION_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, { headers, signal: controller.signal });
+    if (!response.ok) return [];
+    const payload = await response.json() as Record<string, unknown>;
+    const raw = Array.isArray(payload)
+      ? payload
+      : Array.isArray(payload?.models)
+        ? payload.models as Array<Record<string, unknown>>
+        : Array.isArray(payload?.data)
+          ? payload.data as Array<Record<string, unknown>>
+          : [];
+    const records: Array<Record<string, unknown>> = [];
+    raw.forEach((entry, index) => {
+      if (!entry || typeof entry !== 'object') return;
+      const record = entry as Record<string, unknown>;
+      const slug = typeof record.slug === 'string'
+        ? record.slug
+        : typeof record.id === 'string'
+          ? record.id
+          : '';
+      if (!slug || !MODEL_SLUG_PATTERN.test(slug)) return;
+      records.push({
+        slug,
+        display_name: typeof record.display_name === 'string' ? record.display_name : slug,
+        description: typeof record.description === 'string' ? record.description : undefined,
+        visibility: 'list',
+        supported_in_api: true,
+        priority: index,
+      });
+    });
+    return records;
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function syncCodexModelsCache(paths: SetupPaths, provider: CodexProvider, apiKey: string): Promise<string[]> {
+  const records = await fetchCodexCatalog(provider, apiKey);
+  if (records.length > 0) {
+    writePrivateFile(path.join(paths.codexDir, 'models_cache.json'), `${JSON.stringify({ models: records }, null, 2)}\n`);
+  }
+  return records.map((record) => String(record.slug)).slice(0, 40);
 }
 
 export function createOpenAiSetupApp(dependencies: SetupDependencies = {}): Express {
@@ -626,7 +1008,11 @@ export function createOpenAiSetupApp(dependencies: SetupDependencies = {}): Expr
         writeProviderConfig(paths, model, provider);
         writeMarker(paths, model, provider);
       }
-      res.json({ ok: true, configured: true, method: 'api_key', provider, model });
+      // Load the models this key unlocks so the chat picker (and the setup
+      // tab) can show them immediately.
+      const effectiveKey = suppliedKey || readStoredApiKey(paths.authPath);
+      const models = effectiveKey ? await syncCodexModelsCache(paths, provider, effectiveKey) : [];
+      res.json({ ok: true, configured: true, method: 'api_key', provider, model, models });
     } catch (error) {
       next(error);
     } finally {
@@ -662,6 +1048,70 @@ export function createOpenAiSetupApp(dependencies: SetupDependencies = {}): Expr
       removeClaudeProxyToken(claudePaths);
       fs.rmSync(claudePaths.markerPath, { force: true });
       res.json({ ok: true, configured: false, provider: 'hooshcode_claude', claude: claudeStatus(claudePaths) });
+    } catch (error) {
+      next(error);
+    } finally {
+      credentialMutationInProgress = false;
+    }
+  });
+
+
+  // ---- Claude Code account login (interactive subscription OAuth) -----------
+
+  app.post('/claude/login', (_req, res, next) => {
+    try {
+      const current = claudeStatus(claudePaths);
+      if (current.method === 'oauth' || current.method === 'credentials') {
+        throw new SetupError('Claude Code از قبل متصل است؛ اول اتصال فعلی را حذف کنید.', 409);
+      }
+      const login = startClaudeLogin(homeDir, claudePaths);
+      res.json({ ok: true, id: login.id, phase: login.phase });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/claude/login/:id', (req, res) => {
+    if (!claudeLogin || claudeLogin.id !== req.params.id) {
+      res.status(404).json({ error: 'درخواست ورود پیدا نشد؛ دوباره شروع کنید.' });
+      return;
+    }
+    res.json({ phase: claudeLogin.phase, url: claudeLogin.url, message: claudeLogin.message });
+  });
+
+  app.post('/claude/login/:id/input', (req, res, next) => {
+    try {
+      const code = typeof req.body?.code === 'string' ? req.body.code : '';
+      const login = submitClaudeLoginCode(req.params.id, code);
+      res.json({ ok: true, phase: login.phase, url: login.url });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete('/claude/login/:id', (req, res) => {
+    if (!claudeLogin || claudeLogin.id !== req.params.id) {
+      res.status(404).json({ error: 'درخواست ورود پیدا نشد.' });
+      return;
+    }
+    killClaudeLoginChild(claudeLogin);
+    finishClaudeLogin(claudeLogin, 'cancelled');
+    res.json({ ok: true });
+  });
+
+  app.delete('/claude-login', async (_req, res, next) => {
+    if (isManagedTeamClaude()) {
+      return next(new SetupError('اتصال Claude از طریق حساب تیم توسط پلتفرم مدیریت می‌شود و قابل حذف نیست.', 403));
+    }
+    if (credentialMutationInProgress) return next(new SetupError('Another credential update is still running.', 409));
+    credentialMutationInProgress = true;
+    try {
+      if (claudeLogin && !claudeLogin.done) {
+        killClaudeLoginChild(claudeLogin);
+        finishClaudeLogin(claudeLogin, 'cancelled');
+      }
+      removeClaudeOauthToken(claudePaths);
+      res.json({ ok: true, configured: false, claude: claudeStatus(claudePaths) });
     } catch (error) {
       next(error);
     } finally {
@@ -772,6 +1222,9 @@ export function createOpenAiSetupApp(dependencies: SetupDependencies = {}): Expr
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
     const statusCode = error instanceof SetupError ? error.statusCode : 500;
     const message = error instanceof SetupError ? error.message : 'OpenAI credential setup failed.';
+    if (!(error instanceof SetupError)) {
+      console.error('[openai-setup] unexpected error:', error);
+    }
     res.status(statusCode).json({ error: message });
   });
 
@@ -780,12 +1233,28 @@ export function createOpenAiSetupApp(dependencies: SetupDependencies = {}): Expr
 
 function start(): void {
   const app = createOpenAiSetupApp();
-  const server = app.listen(PORT, HOST, () => {
-    console.log(JSON.stringify({ ready: true, port: PORT }));
-  });
-  const shutdown = () => server.close(() => process.exit(0));
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  // Desktop bundles share the user's machine: the default port can be taken
+  // by anything (another app, a second CloudCLI copy). Fall back to an
+  // ephemeral port — the host reads the port from the ready line.
+  const boot = (port: number): void => {
+    const server = app.listen(port, HOST, () => {
+      const address = server.address();
+      console.log(JSON.stringify({ ready: true, port: typeof address === 'object' && address ? address.port : port }));
+    });
+    server.on('error', (error: NodeJS.ErrnoException) => {
+      if (error.code === 'EADDRINUSE' && port !== 0) {
+        console.error(`[openai-setup] port ${port} busy - picking a free one`);
+        boot(0);
+        return;
+      }
+      console.error('[openai-setup] server error:', error.message);
+      process.exit(1);
+    });
+    const shutdown = () => server.close(() => process.exit(0));
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+  };
+  boot(PORT);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) start();

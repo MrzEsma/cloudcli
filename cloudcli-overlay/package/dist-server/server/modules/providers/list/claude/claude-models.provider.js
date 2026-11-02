@@ -83,8 +83,31 @@ function readCachedCatalogEntry() {
     return null;
 }
 async function fetchClaudeCatalogIds() {
-    const baseUrl = (process.env.ANTHROPIC_BASE_URL || '').replace(/\/+$/, '');
-    const token = process.env.ANTHROPIC_AUTH_TOKEN || process.env.ANTHROPIC_API_KEY || '';
+    // Desktop bundles run the server without provider env vars — the setup
+    // plugin writes them into ~/.claude/settings.json (the CLI applies that
+    // block itself, the server process does not). Read the same file as a
+    // fallback: proxy tokens (ANTHROPIC_AUTH_TOKEN/BASE_URL) and the user's
+    // own subscription login (CLAUDE_CODE_OAUTH_TOKEN) both live there.
+    let settingsEnv = {};
+    try {
+        const parsed = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.claude', 'settings.json'), 'utf8'));
+        if (parsed && typeof parsed === 'object' && parsed.env && typeof parsed.env === 'object') {
+            settingsEnv = parsed.env;
+        }
+    }
+    catch {
+        // No settings env block — process env only.
+    }
+    const pickEnv = (name) => {
+        const fromProcess = process.env[name];
+        if (typeof fromProcess === 'string' && fromProcess.trim() !== '') {
+            return fromProcess;
+        }
+        const fromSettings = settingsEnv[name];
+        return typeof fromSettings === 'string' && fromSettings.trim() !== '' ? fromSettings : '';
+    };
+    const baseUrl = (pickEnv('ANTHROPIC_BASE_URL') || 'https://api.anthropic.com').replace(/\/+$/, '');
+    const token = pickEnv('ANTHROPIC_AUTH_TOKEN') || pickEnv('ANTHROPIC_API_KEY') || pickEnv('CLAUDE_CODE_OAUTH_TOKEN') || '';
     if (!/^https?:\/\//.test(baseUrl) || !token) {
         return null;
     }

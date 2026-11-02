@@ -431,8 +431,23 @@ app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
   return next(error);
 });
 
+// Desktop bundles share the user's machine: fall back to an ephemeral port
+// when the default is taken (the host reads the port from the ready line).
 const server = app.listen(PORT, HOST, () => {
-  console.log(JSON.stringify({ ready: true, port: PORT }));
+  const address = server.address();
+  console.log(JSON.stringify({ ready: true, port: address && typeof address === 'object' ? address.port : PORT }));
+});
+server.on('error', (error: NodeJS.ErrnoException) => {
+  if (error.code === 'EADDRINUSE') {
+    console.error(`[soniox] port ${PORT} busy - picking a free one`);
+    const retry = app.listen(0, HOST, () => {
+      const retryAddress = retry.address();
+      console.log(JSON.stringify({ ready: true, port: retryAddress && typeof retryAddress === 'object' ? retryAddress.port : 0 }));
+    });
+    return;
+  }
+  console.error('[soniox] server error:', error.message);
+  process.exit(1);
 });
 
 async function shutdown(): Promise<void> {

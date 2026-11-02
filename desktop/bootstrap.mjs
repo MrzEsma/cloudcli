@@ -55,7 +55,8 @@ function findFreePort(preferred) {
                 tryPort(0, true);
             });
             server.listen(port, '127.0.0.1', () => {
-                server.close(() => resolve(server.address().port));
+                const picked = server.address().port;   // null once closed
+                server.close(() => resolve(picked));
             });
         };
         tryPort(preferred, false);
@@ -236,22 +237,15 @@ async function main() {
     }
 
     say('• آماده‌سازی پلاگین‌ها / preparing plugins …');
+    // browser-feedback (playwright + tenant backend) is not viable portably.
     const pluginMap = [
         ['cloudcli-plugin-soniox', 'cloudcli-plugin-soniox'],
         ['cloudcli-plugin-openai-setup', 'cloudcli-plugin-openai-setup'],
-        ['cloudcli-plugin-browser-feedback', 'cloudcli-browser-feedback'],
         ['cloudcli-plugin-cron', 'cloudcli-cron'],
         ['cloudcli-plugin-terminal', 'cloudcli-plugin-terminal'],
     ];
     for (const [src, name] of pluginMap) {
         syncDir(path.join(ROOT, src), path.join(pluginsHome, name));
-    }
-    const skillSrc = path.join(ROOT, 'tenant-agent-skills', 'browser-feedback');
-    for (const skillRoot of [
-        path.join(HOME, '.claude', 'skills'),
-        path.join(HOME, '.codex', 'skills'),
-    ]) {
-        syncDir(skillSrc, path.join(skillRoot, 'browser-feedback'));
     }
 
     writeSonioxConfig();
@@ -299,8 +293,8 @@ async function main() {
     say(`  نام کاربری / Username: ${username}`);
     say(`  رمز / Password:  ${password}   (همین رمز در فایل LOGIN.txt هم هست)`);
     say('');
-    say('  برای استفاده از کلاد: در سایت، Settings → Claude → Sign in');
-    say('  To chat with Claude: in the app, Settings → Claude → Sign in.');
+    say('  برای وصل کردن هوش مصنوعی: در سایت، Settings → اتصال Codex و Claude Code');
+    say('  To connect your AI: in the app, Settings → Codex/Claude Code setup.');
     say('');
     say('  ⚠ برای خاموش کردن برنامه، همین پنجره را ببندید.');
     say('  ⚠ To stop the app, close this window.');

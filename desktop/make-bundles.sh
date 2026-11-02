@@ -302,8 +302,11 @@ build_target() {
   mkdir -p "$stage"
 
   echo "  [repo] staging"
-  rsync -a --exclude .git --exclude node_modules --exclude desktop/dist "$REPO/" "$stage/"
-  rm -rf "$stage/desktop/dist" 2>/dev/null || true
+  # cloudcli-plugin-browser-feedback needs the full playwright browser stack —
+  # not viable in a portable bundle; bootstrap does not activate it either.
+  rsync -a --exclude .git --exclude node_modules --exclude desktop/dist \
+         --exclude cloudcli-plugin-browser-feedback "$REPO/" "$stage/"
+  rm -rf "$stage/desktop/dist" "$stage/cloudcli-plugin-browser-feedback" 2>/dev/null || true
 
   echo "  [deps] npm ci (host natives; retargeted next)"
   (cd "$stage" && npm ci --omit=dev --no-audit --no-fund --loglevel=error)
@@ -314,8 +317,14 @@ build_target() {
   echo "  [plugins] building (dist is platform-neutral)"
   (cd "$stage" && bash scripts/build-plugins.sh "$stage")
   # build-plugins npm-installs dev deps into each plugin dir; the dists are
-  # fully bundled, so the plugin-local node_modules are pure build artifacts.
-  rm -rf "$stage"/cloudcli-plugin-*/node_modules
+  # fully bundled EXCEPT cron, whose tsc output imports luxon at runtime —
+  # keep just that package (~1MB), drop the rest (incl. esbuild/tsc toolchain).
+  find "$stage/cloudcli-plugin-cron/node_modules" -mindepth 1 -maxdepth 1 \
+       ! -name luxon -exec rm -rf {} + 2>/dev/null || true
+  rm -rf "$stage"/cloudcli-plugin-soniox/node_modules \
+         "$stage"/cloudcli-plugin-terminal/node_modules \
+         "$stage"/cloudcli-plugin-openai-setup/node_modules \
+         "$stage"/cloudcli-plugin-browser-feedback/node_modules
 
   retarget_natives "$stage" "$pf" "$arch"
   add_runtime "$stage" "$target"

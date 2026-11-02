@@ -1,6 +1,6 @@
 {
   "name": "cloudcli-plugin-openai-setup",
-  "version": "0.3.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "description": "Per-tenant direct OpenAI and Hoosh Code proxy setup for CloudCLI Codex.",

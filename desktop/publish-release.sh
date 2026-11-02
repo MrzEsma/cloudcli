@@ -17,8 +17,11 @@ REMOTE_URL="https://github.com/MrzEsma/cloudcli.git"
 for z in "$@"; do [[ -f "$z" ]] || { echo "missing $z" >&2; exit 1; }; done
 
 # 1) push the desktop branch (helper supplies credentials; token stays out of URLs)
-if ! git ls-remote --heads "$REMOTE_URL" desktop >/dev/null 2>&1; then
-  git -c "credential.helper=$GIT_HELPER" push "$REMOTE_URL" "desktop:desktop" >/dev/null
+# push when the remote branch is missing or behind (ls-remote exits 0 either way)
+remote_sha="$(git ls-remote --heads "$REMOTE_URL" desktop | cut -f1)"
+local_sha="$(git rev-parse desktop)"
+if [[ "$remote_sha" != "$local_sha" ]]; then
+  git -c "credential.helper=$GIT_HELPER" push -f "$REMOTE_URL" "desktop:desktop" >/dev/null
 fi
 
 # 2) release (create, or reuse if today's already exists)
@@ -31,8 +34,12 @@ rel_id="$(python3 -c "import json,sys;print(json.loads(sys.argv[1])['id'])" "$re
 # 3) upload assets (delete same-name first so reruns succeed)
 for z in "$@"; do
   name="$(basename "$z")"
-  curl -sf -X DELETE -H "Authorization: Bearer $TOKEN" \
-    "$REPO_API/releases/$rel_id/assets?name=$name" >/dev/null 2>&1 || true
+  # delete an existing asset of the same name first (id-based; name-based
+  # asset DELETE is not an endpoint and same-name upload 422s)
+  aid="$(curl -sf -H "Authorization: Bearer $TOKEN" "$REPO_API/releases/$rel_id/assets" \
+    | python3 -c "import json,sys;print(next((a['id'] for a in json.load(sys.stdin) if a['name']==sys.argv[1]),''))" "$name")"
+  [[ -n "$aid" ]] && curl -sf -X DELETE -H "Authorization: Bearer $TOKEN" \
+    "https://api.github.com/repos/MrzEsma/cloudcli/releases/assets/$aid" >/dev/null || true
   curl -sf --retry 3 -X POST \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/zip" \

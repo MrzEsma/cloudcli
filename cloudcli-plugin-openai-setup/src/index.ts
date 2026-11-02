@@ -9,7 +9,7 @@ type SetupStatus = {
   claude: {
     configured: boolean;
     managedByTenant: boolean;
-    method: 'iclaude' | 'api_key' | 'none';
+    method: 'iclaude' | 'oauth' | 'credentials' | 'api_key' | 'none';
     managedTeam: boolean;
   };
 };
@@ -39,9 +39,10 @@ const MODELS = {
 } as const;
 
 const PROVIDERS = [
-  { id: 'openai', label: 'OpenAI مستقیم' },
-  { id: 'hooshcode', label: 'هوش کد · پراکسی' },
-  { id: 'hooshcode_claude', label: 'هوش کد · Claude Code' },
+  { id: 'claude_oauth', label: 'Claude Code — حساب خودم (لاگین در مرورگر)' },
+  { id: 'hooshcode_claude', label: 'هوش کد — Claude Code (توکن)' },
+  { id: 'openai', label: 'OpenAI — کلید API' },
+  { id: 'hooshcode', label: 'هوش کد — OpenAI/Codex (توکن)' },
   { id: 'iclaude_team', label: 'Claude · حساب تیم' },
 ] as const;
 
@@ -122,6 +123,27 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
         <div id="oa-status" class="oa-status" aria-live="polite"></div>
       </section>
 
+      <section id="oa-login-card" class="oa-card" style="display:none">
+        <div class="oa-title" style="font-size:16px">ورود Claude Code با حساب خودتان</div>
+        <div class="oa-subtitle" style="margin-bottom:12px">دکمه را بزنید؛ صفحه ورود Claude در مرورگر باز می‌شود، اجازه را تأیید کنید و کد نشان‌داده‌شده را همین‌جا وارد کنید. مدل‌های حساب شما خودکار در چت Claude آماده می‌شوند.</div>
+        <div id="oa-login-active" style="display:none">
+          <div id="oa-login-phase" class="oa-note" style="margin-bottom:8px"></div>
+          <a id="oa-login-url" class="oa-note" dir="ltr" style="display:none;word-break:break-all;margin-bottom:10px" target="_blank" rel="noopener noreferrer"></a>
+          <div id="oa-login-code-row" style="display:none;margin-bottom:10px">
+            <div class="oa-note" style="margin-bottom:6px">در صفحه‌ای که باز می‌شود Authorize را بزنید؛ بعد یک <b>کد تأیید</b> نشان داده می‌شود — همان کد را این‌جا وارد کنید:</div>
+            <div class="oa-row">
+              <input id="oa-login-code" dir="ltr" placeholder="code" style="flex:1;min-width:0" autocomplete="off" />
+              <button id="oa-login-submit" class="oa-button oa-primary">ثبت کد</button>
+            </div>
+          </div>
+          <div class="oa-row" style="margin-bottom:12px"><button id="oa-login-cancel" class="oa-button">لغو</button></div>
+        </div>
+        <div class="oa-row">
+          <button id="oa-login-start" class="oa-button oa-primary">شروع ورود Claude</button>
+          <button id="oa-login-logout" class="oa-button oa-danger" style="display:none">خروج از حساب Claude</button>
+        </div>
+      </section>
+
       <section id="oa-proxy-card" class="oa-card">
         <div class="oa-proxy-head">
           <div>
@@ -181,6 +203,16 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
   const providerNote = root.querySelector<HTMLElement>('#oa-provider-note')!;
   const openAiLink = root.querySelector<HTMLElement>('#oa-openai-link')!;
   const proxyCard = root.querySelector<HTMLElement>('#oa-proxy-card')!;
+  const loginCard = root.querySelector<HTMLElement>('#oa-login-card')!;
+  const loginActive = root.querySelector<HTMLElement>('#oa-login-active')!;
+  const loginPhase = root.querySelector<HTMLElement>('#oa-login-phase')!;
+  const loginUrl = root.querySelector<HTMLAnchorElement>('#oa-login-url')!;
+  const loginStartButton = root.querySelector<HTMLButtonElement>('#oa-login-start')!;
+  const loginCancelButton = root.querySelector<HTMLButtonElement>('#oa-login-cancel')!;
+  const loginLogoutButton = root.querySelector<HTMLButtonElement>('#oa-login-logout')!;
+  const loginCodeRow = root.querySelector<HTMLElement>('#oa-login-code-row')!;
+  const loginCodeInput = root.querySelector<HTMLInputElement>('#oa-login-code')!;
+  const loginCodeSubmit = root.querySelector<HTMLButtonElement>('#oa-login-submit')!;
   let managedTeamClaude = false;
 
   function setStatus(message: string, kind: 'normal' | 'error' | 'success' = 'normal'): void {
@@ -189,25 +221,34 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
   }
 
   function isClaudeProvider(): boolean {
-    return providerInput.value === 'hooshcode_claude' || providerInput.value === 'iclaude_team';
+    return providerInput.value === 'hooshcode_claude' || providerInput.value === 'iclaude_team' || providerInput.value === 'claude_oauth';
+  }
+
+  function isAccountLogin(): boolean {
+    return providerInput.value === 'claude_oauth';
   }
 
   function updateProviderCopy(): void {
     const isHooshCode = providerInput.value === 'hooshcode';
     const isClaude = isClaudeProvider();
     const isManagedClaude = providerInput.value === 'iclaude_team';
-    keyField.style.display = isManagedClaude ? 'none' : 'flex';
-    credentialActions.style.display = isManagedClaude ? 'none' : 'flex';
+    const isAccount = isAccountLogin();
+    keyField.style.display = isManagedClaude || isAccount ? 'none' : 'flex';
+    credentialActions.style.display = isManagedClaude || isAccount ? 'none' : 'flex';
+    loginCard.style.display = isAccount ? 'block' : 'none';
+    if (!isAccount) stopLoginPoll();
     keyLabel.textContent = isClaude ? 'توکن هوش کد برای Claude Code' : isHooshCode ? 'کلید API هوش کد' : 'OpenAI API key';
     keyInput.placeholder = isClaude ? 'توکن هوش کد مخصوص Claude Code' : isHooshCode ? 'کلید پراکسی هوش کد' : 'OpenAI API key';
     saveButton.textContent = isClaude ? 'اتصال Claude Code به هوش کد' : isHooshCode ? 'اتصال به هوش کد' : 'ذخیره و بررسی با OpenAI';
     providerNote.textContent = isManagedClaude
       ? ' اتصال Claude با حساب تیم توسط پلتفرم آماده و نگه‌داری می‌شود؛ نیازی به واردکردن کلید یا ورود جداگانه ندارید. '
-      : isClaude
-      ? ' در حالت «هوش کد · Claude Code»، توکن فقط برای Claude Code همین tenant ذخیره می‌شود و از مسیر Claude با هوش کد بررسی می‌شود. '
-      : isHooshCode
-        ? ' در حالت «هوش کد»، کلید به OpenAI فرستاده نمی‌شود و Codex از پراکسی هوش کد استفاده می‌کند. '
-        : ' در حالت OpenAI، کلید مستقیماً با OpenAI بررسی می‌شود. ';
+      : isAccount
+        ? ' ورود با حساب claude.ai خودتان انجام می‌شود؛ اشتراک Pro/Max شما هزینه چت را می‌پردازد و توکن یک‌ساله روی همین کامپیوتر ذخیره می‌شود. '
+        : isClaude
+          ? ' در حالت «هوش کد — Claude Code»، توکن فقط برای Claude Code همین CloudCLI ذخیره می‌شود و از مسیر Claude با هوش کد بررسی می‌شود. '
+          : isHooshCode
+            ? ' در حالت «هوش کد — OpenAI/Codex»، کلید به OpenAI فرستاده نمی‌شود و Codex از توکن هوش کد استفاده می‌کند؛ مدل‌های همین توکن خودکار پیدا می‌شوند. '
+            : ' در حالت OpenAI، کلید مستقیماً با OpenAI بررسی می‌شود و مدل‌های همین کلید خودکار پیدا می‌شوند. ';
     openAiLink.style.display = isHooshCode || isClaude ? 'none' : 'block';
     modelField.style.display = isClaude ? 'none' : 'block';
   }
@@ -248,12 +289,19 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
       stateDetail.textContent = status.claude.configured
         ? 'مدیریت‌شده توسط پلتفرم · مدل‌های واقعی Claude آماده‌اند'
         : 'مدیر سرویس باید راه‌اندازی iClaude را تکمیل کند.';
+    } else if (status.claude.method === 'oauth' || status.claude.method === 'credentials') {
+      stateTitle.textContent = 'Claude Code با حساب خودتان متصل است';
+      stateDetail.textContent = status.claude.method === 'oauth'
+        ? 'توکن یک‌ساله حساب claude.ai شما · چت Claude همین حالا کار می‌کند'
+        : 'ورود کامل Claude Code روی همین کامپیوتر · چت Claude همین حالا کار می‌کند';
     } else {
-      stateTitle.textContent = status.claude.configured ? 'Claude Code به هوش کد متصل است' : 'توکن Claude Code تنظیم نشده است';
+      stateTitle.textContent = status.claude.configured ? 'Claude Code به هوش کد متصل است' : 'اتصال Claude Code تنظیم نشده است';
       stateDetail.textContent = status.claude.configured
         ? `هوش کد · ${status.claude.managedByTenant ? 'مدیریت‌شده توسط tenant' : 'مدیریت‌شده توسط پلتفرم'}`
-        : 'توکن هوش کد مخصوص Claude Code را وارد کنید.';
+        : '«Claude Code — حساب خودم» را انتخاب و وارد شوید، یا توکن هوش کد را در گزینه بعدی وارد کنید.';
     }
+    loginLogoutButton.style.display = status.claude.method === 'oauth' ? 'inline-block' : 'none';
+    loginStartButton.style.display = status.claude.method === 'oauth' ? 'none' : 'inline-block';
     removeButton.disabled = isManaged || !status.claude.configured;
   }
 
@@ -264,6 +312,11 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
     lastStatus = status;
     if (status.claude.method === 'iclaude') {
       providerInput.value = 'iclaude_team';
+      renderClaudeStatus(status);
+      return;
+    }
+    if (status.claude.method === 'oauth' || status.claude.method === 'credentials') {
+      providerInput.value = 'claude_oauth';
       renderClaudeStatus(status);
       return;
     }
@@ -305,16 +358,19 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
       ? 'در حال بررسی توکن هوش کد برای Claude Code…'
       : providerInput.value === 'hooshcode' ? 'در حال ذخیره اتصال هوش کد…' : 'در حال بررسی امن با OpenAI…');
     try {
-      await api.rpc('POST', 'configure', {
+      const result = await api.rpc('POST', 'configure', {
         ...(keyInput.value.trim() ? { apiKey: keyInput.value.trim() } : {}),
         provider: providerInput.value,
         ...(!isClaude ? { model: modelInput.value } : {}),
-      });
+      }) as { models?: string[] };
       keyInput.value = '';
       await refresh();
+      const models = result?.models ?? [];
       setStatus(isClaude
         ? 'اتصال ذخیره شد. sessionهای جدید Claude Code از هوش کد استفاده می‌کنند.'
-        : 'اتصال ذخیره شد. sessionهای جدید Codex از همین provider استفاده می‌کنند.', 'success');
+        : models.length > 0
+          ? `اتصال ذخیره شد؛ ${models.length} مدل از این توکن پیدا شد (${models.slice(0, 4).join('، ')}${models.length > 4 ? '، …' : ''}) و در انتخاب مدل چت آماده است.`
+          : 'اتصال ذخیره شد. sessionهای جدید Codex از همین provider استفاده می‌کنند.', 'success');
     } catch (error) {
       setStatus(messageFor(error), 'error');
     } finally {
@@ -340,6 +396,139 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
       setStatus(messageFor(error), 'error');
     } finally {
       removeButton.disabled = false;
+    }
+  });
+
+
+  // ---- Claude account login flow -------------------------------------------
+
+  let loginPollTimer: number | null = null;
+  let activeLoginId: string | null = null;
+
+  function stopLoginPoll(): void {
+    if (loginPollTimer !== null) {
+      window.clearTimeout(loginPollTimer);
+      loginPollTimer = null;
+    }
+  }
+
+  function showLoginIdle(): void {
+    loginActive.style.display = 'none';
+    loginPhase.textContent = '';
+    loginUrl.style.display = 'none';
+    loginUrl.removeAttribute('href');
+    loginUrl.textContent = '';
+    loginCodeRow.style.display = 'none';
+    loginCodeInput.value = '';
+    loginCodeSubmit.disabled = false;
+    loginStartButton.disabled = false;
+  }
+
+  async function pollLogin(id: string): Promise<void> {
+    if (activeLoginId !== id) return;
+    try {
+      const result = await api.rpc('GET', `claude/login/${id}`) as { phase: string; url?: string | null; message?: string | null };
+      if (activeLoginId !== id) return;
+      if (result.url && !loginUrl.getAttribute('href')) {
+        loginUrl.href = result.url;
+        loginUrl.textContent = 'اگر مرورگر خودش باز نشد، این لینک را باز کنید ↗';
+        loginUrl.style.display = 'block';
+      }
+      loginCodeRow.style.display = result.phase === 'waiting' ? 'block' : 'none';
+      loginPhase.textContent = result.phase === 'waiting'
+        ? '۱) لینک زیر را در مرورگر باز کنید و Authorize را بزنید. ۲) کدی که صفحه به شما می‌دهد را در کادر زیر وارد کنید.'
+        : 'در حال آماده‌سازی صفحه ورود…';
+      if (result.phase === 'authorized') {
+        stopLoginPoll();
+        activeLoginId = null;
+        loginPhase.textContent = '✓ ورود موفق بود؛ چت Claude آماده است.';
+        loginCodeRow.style.display = 'none';
+        loginCodeInput.value = '';
+        await refresh();
+        setStatus('ورود Claude انجام شد؛ مدل‌های حساب شما خودکار بارگذاری می‌شوند.', 'success');
+        setTimeout(() => showLoginIdle(), 4000);
+        return;
+      }
+      if (result.phase === 'error' || result.phase === 'cancelled') {
+        stopLoginPoll();
+        activeLoginId = null;
+        loginPhase.textContent = result.message ?? 'ورود انجام نشد؛ دوباره تلاش کنید.';
+        loginStartButton.disabled = false;
+        return;
+      }
+      loginPollTimer = window.setTimeout(() => { void pollLogin(id); }, 1200);
+    } catch (error) {
+      stopLoginPoll();
+      activeLoginId = null;
+      loginPhase.textContent = messageFor(error);
+      loginStartButton.disabled = false;
+    }
+  }
+
+  loginStartButton.addEventListener('click', async () => {
+    stopLoginPoll();
+    loginStartButton.disabled = true;
+    loginActive.style.display = 'block';
+    loginPhase.textContent = 'در حال آماده‌سازی صفحه ورود…';
+    loginUrl.style.display = 'none';
+    try {
+      const result = await api.rpc('POST', 'claude/login') as { id: string };
+      activeLoginId = result.id;
+      loginCancelButton.dataset.loginId = result.id;
+      void pollLogin(result.id);
+    } catch (error) {
+      loginPhase.textContent = messageFor(error);
+      loginStartButton.disabled = false;
+    }
+  });
+
+  async function submitLoginCode(): Promise<void> {
+    const id = activeLoginId;
+    const code = loginCodeInput.value.trim();
+    if (!id || !code) return;
+    loginCodeSubmit.disabled = true;
+    try {
+      await api.rpc('POST', `claude/login/${id}/input`, { code });
+      loginCodeInput.value = '';
+      loginPhase.textContent = 'کد ثبت شد؛ در حال تأیید…';
+    } catch (error) {
+      loginPhase.textContent = messageFor(error);
+    } finally {
+      loginCodeSubmit.disabled = false;
+      loginCodeInput.focus();
+    }
+  }
+
+  loginCodeSubmit.addEventListener('click', () => { void submitLoginCode(); });
+  loginCodeInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      void submitLoginCode();
+    }
+  });
+
+  loginCancelButton.addEventListener('click', async () => {
+    const id = loginCancelButton.dataset.loginId;
+    stopLoginPoll();
+    activeLoginId = null;
+    if (id) {
+      try { await api.rpc('DELETE', `claude/login/${id}`); } catch { /* already gone */ }
+    }
+    showLoginIdle();
+  });
+
+  loginLogoutButton.addEventListener('click', async () => {
+    if (!window.confirm('خروج از حساب Claude و حذف توکن ذخیره‌شده از همین کامپیوتر؟')) return;
+    loginLogoutButton.disabled = true;
+    setStatus('در حال خروج…');
+    try {
+      await api.rpc('DELETE', 'claude-login');
+      await refresh();
+      setStatus('از حساب Claude خارج شدید.', 'success');
+    } catch (error) {
+      setStatus(messageFor(error), 'error');
+    } finally {
+      loginLogoutButton.disabled = false;
     }
   });
 

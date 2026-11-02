@@ -10,7 +10,19 @@ WORK="$(mktemp -d /tmp/ccui-verify.XXXXXX)"
 trap 'rm -rf "$WORK"' EXIT
 TARGET="$(basename "$ZIP" | grep -oE '(linux-x64|win-x64|darwin-arm64|darwin-x64)')"
 echo "== extract $TARGET"
-python3 -c "import zipfile;zipfile.ZipFile('$ZIP').extractall('$WORK')"
+python3 - "$ZIP" "$WORK" <<'PYE'
+import stat, sys, zipfile
+zp, work = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(zp) as z:
+    z.extractall(work)
+    for info in z.infolist():          # extractall drops the exec bit
+        mode = info.external_attr >> 16
+        if mode and mode & 0o111:
+            import os
+            path = os.path.join(work, info.filename)
+            if os.path.isfile(path):
+                os.chmod(path, stat.S_IMODE(mode))
+PYE
 APP="$WORK/cloudcli"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
