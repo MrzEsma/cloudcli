@@ -7,7 +7,9 @@ NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmjs.org/}"
 cd "$ROOT"
 for p in cloudcli-plugin-soniox cloudcli-plugin-browser-feedback \
          cloudcli-plugin-openai-setup cloudcli-plugin-cron cloudcli-plugin-terminal; do
-  [[ -f "$p/package.json" ]] || { echo "missing $p" >&2; exit 1; }
+  # Desktop bundles exclude some plugins (e.g. browser-feedback) — skip
+  # whatever is not staged instead of aborting.
+  [[ -f "$p/package.json" ]] || { echo "skip $p (not staged)"; continue; }
   npm ci --prefix "$p" --include=dev --no-audit --no-fund --registry="$NPM_REGISTRY"
   if [[ "$p" == cloudcli-plugin-browser-feedback ]]; then
     npm --prefix "$p" run build:dev
