@@ -362,8 +362,40 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
         ...(keyInput.value.trim() ? { apiKey: keyInput.value.trim() } : {}),
         provider: providerInput.value,
         ...(!isClaude ? { model: modelInput.value } : {}),
-      }) as { models?: string[] };
+      }) as { models?: string[]; hooshClaudeSetup?: { id: string; phase: string; log?: string[]; error?: string | null } };
       keyInput.value = '';
+      // The hoosh claude token also registers THIS computer (device setup +
+      // managed Claude download via the iclaude launcher) — poll that task
+      // so the user sees progress instead of a silent multi-minute wait.
+      if (isClaude && result?.hooshClaudeSetup?.id) {
+        const setupId = result.hooshClaudeSetup.id;
+        await new Promise<void>((resolve) => {
+          const poll = async (): Promise<void> => {
+            try {
+              const setup = await api.rpc('GET', `hoosh-claude/setup/${setupId}`) as { phase: string; log?: string[]; error?: string | null };
+              const lastLine = (setup.log ?? []).filter(Boolean).slice(-1)[0] ?? '';
+              if (setup.phase === 'running') {
+                setStatus(lastLine || 'در حال راه‌اندازی Claude Code هوش کد…');
+                loginPollTimer = window.setTimeout(poll, 1500);
+                return;
+              }
+              if (setup.phase === 'error') {
+                setStatus(setup.error || 'راه‌اندازی Claude Code هوش کد ناموفق بود.', 'error');
+                resolve();
+                return;
+              }
+              await refresh();
+              setStatus('اتصال Claude Code هوش کد فعال شد. sessionهای جدید از هوش کد استفاده می‌کنند.', 'success');
+              resolve();
+            } catch {
+              setStatus('در حال راه‌اندازی Claude Code هوش کد…');
+              loginPollTimer = window.setTimeout(poll, 2500);
+            }
+          };
+          void poll();
+        });
+        return;
+      }
       await refresh();
       const models = result?.models ?? [];
       setStatus(isClaude

@@ -88,6 +88,21 @@ export class ClaudeProviderAuth {
             return {};
         }
     }
+
+    /**
+     * The hoosh claude proxy is device-bound: it only serves this computer
+     * once the iclaude registration minted a device token here.
+     */
+    async isHooshDeviceReady() {
+        try {
+            const configPath = path.join(os.homedir(), '.config', 'iclaude', 'config.json');
+            const config = readObjectRecord(JSON.parse(await readFile(configPath, 'utf8')));
+            return typeof config?.device_token === 'string' && config.device_token.trim() !== '';
+        }
+        catch {
+            return false;
+        }
+    }
     /**
      * Checks Claude credentials in the same priority order used by Claude Code.
      */
@@ -111,6 +126,19 @@ export class ClaudeProviderAuth {
             return { authenticated: true, email: 'API Key Auth', method: 'api_key' };
         }
         const settingsEnv = await this.loadSettingsEnv();
+        // Hoosh Code claude access (setup plugin): authenticated once the
+        // iclaude device registration completed on this computer.
+        if (settingsEnv.HOOSHCODE_CLAUDE === '1') {
+            const deviceReady = await this.isHooshDeviceReady();
+            return deviceReady
+                ? { authenticated: true, email: 'هوش کد — Claude Code', method: 'hooshcode_claude' }
+                : {
+                    authenticated: false,
+                    email: null,
+                    method: 'hooshcode_claude',
+                    error: 'راه‌اندازی Claude Code هوش کد روی این دستگاه کامل نشده است. توکن را دوباره ذخیره کنید.',
+                };
+        }
         if (readOptionalString(settingsEnv.ANTHROPIC_API_KEY)) {
             return { authenticated: true, email: 'API Key Auth', method: 'api_key' };
         }

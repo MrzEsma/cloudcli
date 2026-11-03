@@ -1,4 +1,4 @@
-a20309107aaf2e1b92917ac9e9004385cb7419e5a14567a490895b444a81baf9  package/dist-server/server/claude-interactive.js
+217e96b9d80d7b2dcab19ea49dda460d2b0f434ed86965ac601f5622ecf70e1f  package/dist-server/server/claude-interactive.js
 b083bbead8c49af7572dde78df76e07375713a39b58d533fc838810d1f866651  package/dist-server/server/claude-sdk.js
 466766c012afb6d5c9d33bffa6c93929c7338f19336133a74ceab329076edfb3  package/dist-server/server/index.js
 f65c109bc0b3399853d55a1740955e88be4bc0839069e3472ada0f5383ebc19c  package/dist-server/server/modules/database/migrations.js
@@ -6,8 +6,8 @@ f65c109bc0b3399853d55a1740955e88be4bc0839069e3472ada0f5383ebc19c  package/dist-s
 c160ade05c95b09375523a595d332af8c34c0f8524a276e7962638a8455c7103  package/dist-server/server/modules/database/schema.js
 1983009a0ba08ca3be97d82fe7613f97dc46dbc2309a7e6aea6fec7243638c14  package/dist-server/server/modules/projects/services/project-clone.service.js
 8c307ed27c486fbf55f5395e9c40f36527c9d39eaed341de7f189b00d4d961bb  package/dist-server/server/modules/projects/services/projects-with-sessions-fetch.service.js
-318d5f2d89bfd60a1042b9ef3f18123187ea244b05c14a1d3911981f70121b89  package/dist-server/server/modules/providers/list/claude/claude-auth.provider.js
-dfec7f384e13473b115adb65be36b69c4c37b732560b1208778491b806cada87  package/dist-server/server/modules/providers/list/claude/claude-models.provider.js
+2490dacf90f46b6611e78e365d44d570b1f52266e0891ad39611d71097562b60  package/dist-server/server/modules/providers/list/claude/claude-auth.provider.js
+fd995deeb60e9b04298e74f7e0200b1c88fcefe07dc1def9aa9e9f9eec614883  package/dist-server/server/modules/providers/list/claude/claude-models.provider.js
 0d98d9636cb488540af7edef461c9b6e9565ce5d07160b0c77ca5ec90e416ddf  package/dist-server/server/modules/providers/list/claude/claude-session-synchronizer.provider.js
 84b1f2b76240d76b832a5061ed52e88a705db80ea84c6b65ba1323711c18f104  package/dist-server/server/modules/providers/list/codex/codex-auth.provider.js
 d7de729d681acbe64c7fbe8243173b0c0c628d55bb89994d3c3b1d3b30eb1ef9  package/dist-server/server/modules/providers/list/codex/codex-models.provider.js

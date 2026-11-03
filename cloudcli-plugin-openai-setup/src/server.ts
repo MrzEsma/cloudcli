@@ -357,18 +357,26 @@ function readClaudeSettings(paths: ClaudeSetupPaths): Record<string, unknown> {
 }
 
 // Claude Code applies the `env` block of ~/.claude/settings.json to every
-// session, so the tenant-entered Hoosh Code token is stored there and nowhere
-// else. Unrelated settings keys always survive.
+// session. The Hoosh Code claude access is NOT a raw ANTHROPIC_AUTH_TOKEN —
+// the proxy rejects that with "This access has to be set up once on this
+// computer" (its claude pool is device-bound behind the iclaude launcher).
+// We store the panel token as HOOSHCODE_CLAUDE_TOKEN: the interactive
+// runtime runs `iclaude run` (which owns auth), and the model catalog is
+// fetched with it via x-api-key. ANTHROPIC_BASE_URL stays for the catalog
+// fetch; the PTY env strips it before Claude Code sees it.
 function writeClaudeProxyToken(token: string, paths: ClaudeSetupPaths): void {
   const settings = readClaudeSettings(paths);
   const env: Record<string, unknown> = {
     ...(settings.env && typeof settings.env === 'object' ? settings.env as Record<string, unknown> : {}),
-    ANTHROPIC_AUTH_TOKEN: token,
+    HOOSHCODE_CLAUDE: '1',
+    HOOSHCODE_CLAUDE_TOKEN: token,
     ANTHROPIC_BASE_URL: CLAUDE_PROXY_BASE_URL,
   };
-  // The proxy token and the user's own Claude account login are mutually
-  // exclusive ways to authenticate Claude Code; the newest one wins.
-  delete env.CLAUDE_CODE_OAUTH_TOKEN;
+  // The hoosh access and the user's own Claude login are mutually exclusive
+  // ways to authenticate Claude Code; the newest one wins.
+  for (const key of ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY']) {
+    delete env[key];
+  }
   settings.env = env;
   writePrivateFile(paths.settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
 }
@@ -378,7 +386,7 @@ function removeClaudeProxyToken(paths: ClaudeSetupPaths): void {
   const settings = readClaudeSettings(paths);
   if (!settings.env || typeof settings.env !== 'object') return;
   let changed = false;
-  for (const key of ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL']) {
+  for (const key of ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'HOOSHCODE_CLAUDE', 'HOOSHCODE_CLAUDE_TOKEN']) {
     if (Object.prototype.hasOwnProperty.call(settings.env, key)) {
       delete (settings.env as Record<string, unknown>)[key];
       changed = true;
@@ -394,11 +402,156 @@ function writeClaudeMarker(paths: ClaudeSetupPaths): void {
   writePrivateFile(paths.markerPath, `${JSON.stringify(marker)}\n`);
 }
 
+// ---- Hoosh Code claude device setup (iclaude) --------------------------------
+// The panel token alone cannot talk to the claude pool: the proxy binds each
+// computer via the iclaude launcher (`POST /api/register` exchanges the panel
+// token for a device token + pooled Claude OAuth credentials, and the claude
+// process runs with iclaude's hook bridging anthropic traffic through the
+// proxy). Bundles ship the launcher at <app>/runtime/iclaude/iclaude(.exe).
+
+function resolveIclaudeRunner(): { command: string; args: string[] } {
+  const exe = process.platform === 'win32' ? 'iclaude.exe' : 'iclaude';
+  // `iclaude setup` MOVES the launcher into <home>/.local/bin — canonical
+  // after the first setup. The bundled runtime/iclaude seed (and the env
+  // pointer to it) only exists before that.
+  const installed = path.join(os.homedir(), '.local', 'bin', exe);
+  if (fs.existsSync(installed)) return { command: installed, args: [] };
+  const explicit = typeof process.env.CLOUDCLI_ICLAUDE_BIN === 'string' && process.env.CLOUDCLI_ICLAUDE_BIN.trim() !== ''
+    ? process.env.CLOUDCLI_ICLAUDE_BIN.trim()
+    : null;
+  if (explicit && fs.existsSync(explicit)) return { command: explicit, args: [] };
+  for (const root of walkUpModuleRoots()) {
+    const candidate = path.join(root, 'runtime', 'iclaude', exe);
+    if (fs.existsSync(candidate)) return { command: candidate, args: [] };
+  }
+  return { command: 'iclaude', args: [] };
+}
+
+function runIclaudeLogout(): void {
+  try {
+    // `iclaude logout` does NOT free the seat — a hoosh account only carries
+    // 2 devices, so removing the credential must unregister this machine
+    // (`iclaude uninstall -y`; conversations are kept, the binary stays).
+    const runner = resolveIclaudeRunner();
+    const child = spawnChildProcess(runner.command, [...runner.args, 'uninstall', '-y'], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.on('error', () => { /* iclaude not present or uninstall unsupported: settings keys are gone anyway */ });
+    child.unref();
+  } catch {
+    // Best-effort only — the settings cleanup already removes the access.
+  }
+}
+
+type HooshClaudeSetupPhase = 'running' | 'done' | 'error';
+type HooshClaudeSetup = {
+  id: string;
+  phase: HooshClaudeSetupPhase;
+  log: string[];
+  error: string | null;
+  done: boolean;
+  child: { kill(): void } | null;
+  timer: NodeJS.Timeout | null;
+};
+
+const HOOSH_CLAUDE_SETUP_TIMEOUT_MS = 20 * 60 * 1000;
+const HOOSH_CLAUDE_SETUP_LOG_LINES = 40;
+
+let hooshClaudeSetup: HooshClaudeSetup | null = null;
+
+// iclaude's own stderr lines, mapped to Persian the setup UI can show as-is.
+function translateHooshSetupLine(line: string): string {
+  if (line.includes("wasn't accepted")) return 'توکن هوش کد پذیرفته نشد. خط تنظیم را دوباره از پنل کپی کنید.';
+  if (line.includes("Couldn't connect")) return 'ارتباط با هوش کد برقرار نشد. اینترنت را بررسی و دوباره تلاش کنید.';
+  if (line.includes("doesn't include Claude Code")) return 'این دسترسی شامل Claude Code نیست. با پشتیبانی هوش کد تماس بگیرید.';
+  if (line.includes('busy right now')) return 'سرور هوش کد فعلاً شلوغ است. یک دقیقه بعد دوباره تلاش کنید.';
+  if (line.includes('Downloading')) return 'در حال دانلود Claude Code از هوش کد…';
+  if (line.includes('Setting up') || line.includes('Connecting')) return 'در حال ثبت این دستگاه روی حساب هوش کد…';
+  if (line.includes('Ready') || line.includes('Installed')) return 'راه‌اندازی کامل شد.';
+  return line.trim();
+}
+
+function finishHooshClaudeSetup(setup: HooshClaudeSetup, phase: 'done' | 'error', error: string | null): void {
+  if (setup.done) return;
+  setup.done = true;
+  setup.phase = phase;
+  setup.error = error;
+  if (setup.timer) clearTimeout(setup.timer);
+  setup.child = null;
+}
+
+function startHooshClaudeSetup(token: string, homeDir: string, paths: ClaudeSetupPaths): HooshClaudeSetup {
+  if (hooshClaudeSetup && !hooshClaudeSetup.done) {
+    throw new SetupError('راه‌اندازی قبلی هنوز در جریان است.', 409);
+  }
+  const runner = resolveIclaudeRunner();
+  const setup: HooshClaudeSetup = {
+    id: crypto.randomUUID(),
+    phase: 'running',
+    log: ['در حال شروع راه‌اندازی Claude Code هوش کد…'],
+    error: null,
+    done: false,
+    child: null,
+    timer: null,
+  };
+  let settled = false;
+  const appendLine = (chunk: Buffer) => {
+    const text = stripAnsiCodes(chunk.toString('utf8'));
+    for (const raw of text.split(/\r?\n/)) {
+      const translated = translateHooshSetupLine(raw);
+      if (translated) {
+        setup.log.push(translated);
+        if (setup.log.length > HOOSH_CLAUDE_SETUP_LOG_LINES) setup.log.shift();
+      }
+    }
+  };
+  try {
+    const child = spawnChildProcess(runner.command, [...runner.args, 'setup', '--token', token, '--url', CLAUDE_PROXY_BASE_URL], {
+      cwd: homeDir,
+      env: { ...process.env, HOME: homeDir, USERPROFILE: homeDir },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    setup.child = {
+      kill: () => { try { child.kill(); } catch { /* already gone */ } },
+    };
+    child.stdout?.on('data', appendLine);
+    child.stderr?.on('data', appendLine);
+    child.once('error', (error) => {
+      if (settled) return;
+      settled = true;
+      finishHooshClaudeSetup(setup, 'error', `اجرای ابزار راه‌انداز هوش کد ممکن نشد: ${error.message}`);
+    });
+    child.once('close', (exitCode) => {
+      if (settled) return;
+      settled = true;
+      if (exitCode === 0) {
+        writeClaudeMarker(paths);
+        setup.log.push('اتصال Claude Code هوش کد فعال شد.');
+        finishHooshClaudeSetup(setup, 'done', null);
+      } else {
+        const lastError = [...setup.log].reverse().find((line) => /پذیرفته نشد|شامل Claude Code نیست|برقرار نشد|شلوغ/.test(line));
+        finishHooshClaudeSetup(setup, 'error', lastError || `راه‌اندازی ناموفق بود (کد ${exitCode ?? 0}). دوباره تلاش کنید.`);
+      }
+    });
+  } catch (error) {
+    finishHooshClaudeSetup(setup, 'error', `اجرای ابزار راه‌انداز هوش کد ممکن نشد: ${messageFor(error)}`);
+    return setup;
+  }
+  setup.timer = setTimeout(() => {
+    setup.child?.kill();
+    finishHooshClaudeSetup(setup, 'error', 'مهلت راه‌اندازی (۲۰ دقیقه) تمام شد؛ دوباره تلاش کنید.');
+  }, HOOSH_CLAUDE_SETUP_TIMEOUT_MS);
+  hooshClaudeSetup = setup;
+  return setup;
+}
+
 type ClaudeSetupStatus = {
   configured: boolean;
   managedByTenant: boolean;
-  method: 'iclaude' | 'oauth' | 'credentials' | 'api_key' | 'none';
+  method: 'iclaude' | 'oauth' | 'credentials' | 'api_key' | 'hooshcode_claude' | 'none';
   managedTeam: boolean;
+  deviceReady: boolean;
 };
 
 function isManagedTeamClaude(): boolean {
@@ -420,6 +573,7 @@ function claudeStatus(paths: ClaudeSetupPaths): ClaudeSetupStatus {
       managedByTenant: false,
       method: 'iclaude',
       managedTeam: true,
+      deviceReady: configured,
     };
   }
   const settings = readClaudeSettings(paths);
@@ -427,26 +581,46 @@ function claudeStatus(paths: ClaudeSetupPaths): ClaudeSetupStatus {
     ? settings.env as Record<string, unknown>
     : {};
   const oauthToken = typeof env.CLAUDE_CODE_OAUTH_TOKEN === 'string' && env.CLAUDE_CODE_OAUTH_TOKEN.trim() !== '';
+  const hooshClaude = env.HOOSHCODE_CLAUDE === '1';
   const proxyToken = typeof env.ANTHROPIC_AUTH_TOKEN === 'string' && env.ANTHROPIC_AUTH_TOKEN.trim() !== '';
+  // The iclaude device registration completed on this computer (device token
+  // present in its config). Without it the proxy refuses every request.
+  const deviceReady = (() => {
+    try {
+      const iclaudeConfig = readJson(path.join(homeDirOf(paths), '.config', 'iclaude', 'config.json'));
+      return typeof iclaudeConfig?.device_token === 'string' && iclaudeConfig.device_token.trim() !== '';
+    } catch {
+      return false;
+    }
+  })();
   // ~/.claude/.credentials.json appears when Claude Code itself completed a
   // full login (e.g. someone ran `claude` in the terminal tab).
   const hasCredentials = fs.existsSync(path.join(paths.claudeDir, '.credentials.json'));
   // Both the tenant (this plugin) and the platform bootstrap write the same
   // marker; ownership is decided by its managedBy field, not its existence.
   const marker = readJson(paths.markerPath);
-  const method: ClaudeSetupStatus['method'] = oauthToken
-    ? 'oauth'
-    : hasCredentials
-      ? 'credentials'
-      : proxyToken
-        ? 'api_key'
-        : 'none';
+  const method: ClaudeSetupStatus['method'] = hooshClaude
+    ? 'hooshcode_claude'
+    : oauthToken
+      ? 'oauth'
+      : hasCredentials
+        ? 'credentials'
+        : proxyToken
+          ? 'api_key'
+          : 'none';
   return {
-    configured: method !== 'none',
+    configured: method !== 'none' && (!hooshClaude || deviceReady),
     managedByTenant: marker.managedBy === 'tenant',
     method,
     managedTeam: false,
+    deviceReady,
   };
+}
+
+// claudeSetupPaths carries absolute paths under the effective home; recover
+// that home for iclaude's own config (~/.config/iclaude).
+function homeDirOf(paths: ClaudeSetupPaths): string {
+  return path.dirname(paths.claudeDir);
 }
 
 
@@ -543,10 +717,11 @@ function writeClaudeOauthToken(token: string, paths: ClaudeSetupPaths): void {
     ...(settings.env && typeof settings.env === 'object' ? settings.env as Record<string, unknown> : {}),
     CLAUDE_CODE_OAUTH_TOKEN: token,
   };
-  // The account login and the Hoosh Code proxy token are mutually exclusive
+  // The account login and the Hoosh Code claude access are mutually exclusive
   // ways to authenticate Claude Code; the newest one wins.
-  delete env.ANTHROPIC_AUTH_TOKEN;
-  delete env.ANTHROPIC_BASE_URL;
+  for (const key of ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'HOOSHCODE_CLAUDE', 'HOOSHCODE_CLAUDE_TOKEN']) {
+    delete env[key];
+  }
   settings.env = env;
   writePrivateFile(paths.settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
   writePrivateFile(paths.markerPath, `${JSON.stringify({
@@ -561,11 +736,20 @@ function removeClaudeOauthToken(paths: ClaudeSetupPaths): void {
   const settings = readClaudeSettings(paths);
   if (!settings.env || typeof settings.env !== 'object') return;
   const env = settings.env as Record<string, unknown>;
-  if (!Object.prototype.hasOwnProperty.call(env, 'CLAUDE_CODE_OAUTH_TOKEN')) return;
-  delete env.CLAUDE_CODE_OAUTH_TOKEN;
+  // Logging out of Claude clears whichever access is active — the user's own
+  // OAuth login or the Hoosh Code panel token.
+  let changed = false;
+  for (const key of ['CLAUDE_CODE_OAUTH_TOKEN', 'HOOSHCODE_CLAUDE', 'HOOSHCODE_CLAUDE_TOKEN', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL']) {
+    if (Object.prototype.hasOwnProperty.call(env, key)) {
+      delete env[key];
+      changed = true;
+    }
+  }
+  if (!changed) return;
   if (Object.keys(env).length === 0) delete settings.env;
   writePrivateFile(paths.settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
   fs.rmSync(paths.markerPath, { force: true });
+  runIclaudeLogout();
 }
 
 type ClaudeLoginPhase = 'starting' | 'waiting' | 'authorized' | 'error' | 'cancelled';
@@ -767,13 +951,14 @@ async function validateBearerToken(
   url: string,
   providerLabel: string,
   extraHeaders: Record<string, string> = {},
+  authStyle: 'bearer' | 'x-api-key' = 'bearer',
 ): Promise<void> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PROVIDER_VALIDATION_TIMEOUT_MS);
   try {
     const response = await fetch(url, {
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        ...(authStyle === 'x-api-key' ? { 'x-api-key': apiKey } : { Authorization: `Bearer ${apiKey}` }),
         ...extraHeaders,
       },
       signal: controller.signal,
@@ -801,12 +986,15 @@ function validateWithHooshCode(apiKey: string): Promise<void> {
   });
 }
 
-// Validate the Claude-targeted token exactly the way Claude Code will use it:
-// ANTHROPIC_AUTH_TOKEN as a bearer header on the Anthropic-compatible origin.
+// The Hoosh Code claude pool is NOT a plain ANTHROPIC_BASE_URL proxy: the
+// Bearer path is gated behind its iclaude device setup ("This access has to
+// be set up once on this computer"). The models listing is the one endpoint
+// that accepts the panel token directly — and only via x-api-key (2026-11-03,
+// verified against claude.flearning.ir with a live panel token).
 function validateWithHooshCodeClaude(apiKey: string): Promise<void> {
   return validateBearerToken(apiKey, CLAUDE_MODELS_URL, 'هوش کد', {
     'anthropic-version': '2023-06-01',
-  });
+  }, 'x-api-key');
 }
 
 function validateKeyShape(apiKey: unknown): string {
@@ -964,14 +1152,23 @@ export function createOpenAiSetupApp(dependencies: SetupDependencies = {}): Expr
           try {
             await validateClaudeProxyApiKey(suppliedToken);
             writeClaudeProxyToken(suppliedToken, claudePaths);
-            writeClaudeMarker(claudePaths);
+            // Register THIS computer on the hoosh account (device token +
+            // pooled Claude credentials via the iclaude launcher). Runs as a
+            // polled task — it downloads Claude Code on first use.
+            startHooshClaudeSetup(suppliedToken, homeDir, claudePaths);
           } catch (error) {
             restoreFile(claudePaths.settingsPath, previousSettings);
             restoreFile(claudePaths.markerPath, previousMarker);
             throw error;
           }
         }
-        res.json({ ok: true, configured: true, provider, claude: claudeStatus(claudePaths) });
+        res.json({
+          ok: true,
+          configured: true,
+          provider,
+          claude: claudeStatus(claudePaths),
+          hooshClaudeSetup: hooshClaudeSetup ? { id: hooshClaudeSetup.id, phase: hooshClaudeSetup.phase, log: hooshClaudeSetup.log, error: hooshClaudeSetup.error } : null,
+        });
         return;
       }
       const model = validateModel(req.body?.model, provider);
@@ -1047,6 +1244,7 @@ export function createOpenAiSetupApp(dependencies: SetupDependencies = {}): Expr
     try {
       removeClaudeProxyToken(claudePaths);
       fs.rmSync(claudePaths.markerPath, { force: true });
+      runIclaudeLogout();
       res.json({ ok: true, configured: false, provider: 'hooshcode_claude', claude: claudeStatus(claudePaths) });
     } catch (error) {
       next(error);
@@ -1096,6 +1294,33 @@ export function createOpenAiSetupApp(dependencies: SetupDependencies = {}): Expr
     }
     killClaudeLoginChild(claudeLogin);
     finishClaudeLogin(claudeLogin, 'cancelled');
+    res.json({ ok: true });
+  });
+
+  // ---- Hoosh Code claude device setup (polled task) ------------------------
+
+  app.get('/hoosh-claude/setup/:id', (req, res) => {
+    if (!hooshClaudeSetup || hooshClaudeSetup.id !== req.params.id) {
+      res.status(404).json({ error: 'درخواست راه‌اندازی پیدا نشد.' });
+      return;
+    }
+    res.json({
+      id: hooshClaudeSetup.id,
+      phase: hooshClaudeSetup.phase,
+      log: hooshClaudeSetup.log,
+      error: hooshClaudeSetup.error,
+    });
+  });
+
+  app.delete('/hoosh-claude/setup/:id', (req, res) => {
+    if (!hooshClaudeSetup || hooshClaudeSetup.id !== req.params.id) {
+      res.status(404).json({ error: 'درخواست راه‌اندازی پیدا نشد.' });
+      return;
+    }
+    if (!hooshClaudeSetup.done) {
+      hooshClaudeSetup.child?.kill();
+      finishHooshClaudeSetup(hooshClaudeSetup, 'error', 'راه‌اندازی لغو شد.');
+    }
     res.json({ ok: true });
   });
 

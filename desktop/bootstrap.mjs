@@ -86,13 +86,17 @@ function waitForServer(url, timeoutMs) {
 }
 
 function openBrowser(url) {
+    // spawn() itself rarely throws — a missing opener (ENOENT) arrives as an
+    // async 'error' event on the child and would crash the bootstrap on
+    // minimal Linux desktops. The URL is printed anyway.
+    const ignore = (error) => { void error; };
     try {
         if (WIN) {
-            spawn('cmd.exe', ['/c', 'start', '', url], { detached: true, stdio: 'ignore' }).unref();
+            spawn('cmd.exe', ['/c', 'start', '', url], { detached: true, stdio: 'ignore' }).on('error', ignore).unref();
         } else if (process.platform === 'darwin') {
-            spawn('open', [url], { detached: true, stdio: 'ignore' }).unref();
+            spawn('open', [url], { detached: true, stdio: 'ignore' }).on('error', ignore).unref();
         } else {
-            spawn('xdg-open', [url], { detached: true, stdio: 'ignore' }).unref();
+            spawn('xdg-open', [url], { detached: true, stdio: 'ignore' }).on('error', ignore).unref();
         }
     } catch {
         /* the URL is printed anyway */
@@ -204,6 +208,10 @@ async function main() {
             path.join(nodeModules, '.bin'), env.PATH].join(path.delimiter);
     }
     env.HOST = '127.0.0.1';                 // desktop listens locally only
+    // Hoosh Code claude launcher: registers this computer on the hoosh
+    // account (device token) and runs its managed Claude sessions.
+    const iclaudeBin = path.join(ROOT, 'runtime', 'iclaude', WIN ? 'iclaude.exe' : 'iclaude');
+    if (fs.existsSync(iclaudeBin)) env.CLOUDCLI_ICLAUDE_BIN = iclaudeBin;
     env.SERVER_PORT = String(port);
     env.PORT = String(port);
     env.DATABASE_PATH = path.join(HOME, '.cloudcli', 'auth.db');

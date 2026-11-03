@@ -313,7 +313,7 @@ export async function queryInteractiveClaude(command, options = {}, ws) {
         return;
     }
     try {
-        acceptProjectTrust(projectPath, options.claudeConfigDir);
+        acceptProjectTrust(projectPath, resolveSessionConfigDir(options.claudeConfigDir));
     }
     catch (error) {
         // Non-fatal: worst case the TUI shows its trust dialog and the ready
@@ -441,6 +441,92 @@ export async function abortInteractiveClaudeSession(providerSessionId) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Hoosh Code claude access (panel token via the setup plugin). The hoosh
+ * claude pool is device-bound behind the iclaude launcher: the proxy answers
+ * plain `claude` + ANTHROPIC_AUTH_TOKEN with 403 "This access has to be set
+ * up once on this computer" (2026-11-03). Sessions must run through
+ * `iclaude run`, which exchanges the panel token for a device token + pooled
+ * Claude credentials and bridges anthropic traffic through the proxy itself.
+ * Marker + token live in ~/.claude/settings.json env, written by the plugin.
+ */
+function isHooshClaudeAccess() {
+    try {
+        const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
+        const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+        return parsed?.env?.HOOSHCODE_CLAUDE === '1';
+    }
+    catch {
+        return false;
+    }
+}
+
+/**
+ * The iclaude launcher: explicit override (desktop bootstrap) → bundled
+ * <app>/runtime/iclaude/iclaude(.exe) → whatever `iclaude` resolves to on PATH.
+ */
+function resolveIclaudeRunner() {
+    const exe = process.platform === 'win32' ? 'iclaude.exe' : 'iclaude';
+    // `iclaude setup` MOVES the launcher into <home>/.local/bin — that is the
+    // canonical install once setup has run. The bundled runtime/iclaude seed
+    // (and the env pointer to it) only exists before the first setup.
+    const installed = path.join(os.homedir(), '.local', 'bin', exe);
+    try {
+        if (fs.statSync(installed).isFile()) {
+            return { command: installed, args: [] };
+        }
+    }
+    catch { /* not installed yet */ }
+    const explicit = typeof process.env.CLOUDCLI_ICLAUDE_BIN === 'string' && process.env.CLOUDCLI_ICLAUDE_BIN.trim() !== ''
+        ? process.env.CLOUDCLI_ICLAUDE_BIN.trim()
+        : null;
+    if (explicit) {
+        try {
+            if (fs.statSync(explicit).isFile()) {
+                return { command: explicit, args: [] };
+            }
+        }
+        catch { /* stale pointer (setup moved the binary away) — keep looking */ }
+    }
+    try {
+        // This module runs from the applied package inside node_modules in
+        // desktop bundles (<app>/node_modules/@cloudcli-ai/cloudcli/...), and
+        // from the overlay source copy elsewhere — walk up until the app root
+        // that carries runtime/iclaude appears.
+        let dir = path.dirname(fileURLToPath(import.meta.url));
+        for (let depth = 0; depth < 16; depth += 1) {
+            const candidate = path.join(dir, 'runtime', 'iclaude', exe);
+            try {
+                if (fs.statSync(candidate).isFile()) {
+                    return { command: candidate, args: [] };
+                }
+            }
+            catch { /* keep climbing */ }
+            const parent = path.dirname(dir);
+            if (parent === dir) break;
+            dir = parent;
+        }
+    }
+    catch { /* fall through to PATH */ }
+    return { command: 'iclaude', args: [] };
+}
+
+/**
+ * Hoosh sessions without an explicit config dir keep their transcripts and
+ * trust state under the iclaude config dir; everything that keys off
+ * claudeConfigDir (trust premark, transcript lookup, resume recovery) must
+ * resolve there even though the chat dispatch passes no dir of its own.
+ */
+function resolveSessionConfigDir(configDir) {
+    if (typeof configDir === 'string' && configDir.trim()) {
+        return configDir.trim();
+    }
+    if (isHooshClaudeAccess()) {
+        return path.join(os.homedir(), '.local', 'share', 'iclaude', 'claude-config');
+    }
+    return configDir;
+}
+
+/**
  * Personal (oauth) sessions must run the NEWEST iclaude-managed Claude binary,
  * not the image's older bundled claude that PATH resolves. The old TUI's
  * paste/dialog quirks silently eat automated submits (2026-10-17: a turn sat
@@ -499,6 +585,11 @@ async function spawnTuiSession({ providerSessionId, projectPath, resume, permiss
     const modelArg = typeof forwardModel === 'string' && /^[a-zA-Z0-9._\[\]-]+$/.test(forwardModel)
         ? ` --model ${forwardModel}`
         : '';
+    // Hoosh sessions keep their transcripts + trust state under the iclaude
+    // config dir (findTranscriptPath, trust premark and the resume-missed
+    // recovery all key off claudeConfigDir).
+    const hooshClaude = isHooshClaudeAccess();
+    claudeConfigDir = resolveSessionConfigDir(claudeConfigDir);
     const claudeBin = resolveTuiClaudeBinary(claudeConfigDir);
     let ptyProcess;
     try {
@@ -507,21 +598,66 @@ async function spawnTuiSession({ providerSessionId, projectPath, resume, permiss
             // CLI entry through this server's own Node binary under ConPTY.
             // Argument values are ids and validated catalog names, so an argv
             // array carries them without any shell re-parsing.
-            const claudeScript = resolveTuiClaudeScript();
-            const claudeArgs = [
-                resume ? '--resume' : '--session-id',
-                providerSessionId,
-                ...(permissionMode ? ['--permission-mode', permissionMode] : []),
-                ...(modelArg ? ['--model', forwardModel] : []),
-            ];
-            ptyProcess = pty.spawn(process.execPath, [claudeScript, ...claudeArgs], {
+            if (hooshClaude) {
+                // The hoosh claude pool only serves the iclaude-managed
+                // client — `iclaude run` owns auth, config dir and the
+                // traffic bridge; never the raw CLI with proxy env.
+                const iclaude = resolveIclaudeRunner();
+                const iclaudeArgs = [
+                    ...iclaude.args,
+                    'run',
+                    resume ? '--resume' : '--session-id',
+                    providerSessionId,
+                    ...(permissionMode ? ['--permission-mode', permissionMode] : []),
+                    ...(modelArg ? ['--model', forwardModel] : []),
+                ];
+                ptyProcess = pty.spawn(iclaude.command, iclaudeArgs, {
+                    name: 'xterm-256color',
+                    cols: 120,
+                    rows: 40,
+                    cwd: projectPath,
+                    env: buildPtyEnv(claudeConfigDir, { hooshClaude: true }),
+                });
+                debugLog('spawn', { iclaude: iclaude.command, iclaudeArgs, pid: ptyProcess.pid, projectPath });
+            }
+            else {
+                const claudeScript = resolveTuiClaudeScript();
+                const claudeArgs = [
+                    resume ? '--resume' : '--session-id',
+                    providerSessionId,
+                    ...(permissionMode ? ['--permission-mode', permissionMode] : []),
+                    ...(modelArg ? ['--model', forwardModel] : []),
+                ];
+                ptyProcess = pty.spawn(process.execPath, [claudeScript, ...claudeArgs], {
+                    name: 'xterm-256color',
+                    cols: 120,
+                    rows: 40,
+                    cwd: projectPath,
+                    env: buildPtyEnv(claudeConfigDir),
+                });
+                debugLog('spawn', { claudeScript, claudeArgs, pid: ptyProcess.pid, projectPath });
+            }
+        }
+        else if (hooshClaude) {
+            // Same as the win32 branch: hoosh sessions go through the
+            // iclaude launcher (it sets IC_*/CLAUDE_CONFIG_DIR itself).
+            const iclaude = resolveIclaudeRunner();
+            const claudeCommand = [
+                JSON.stringify(iclaude.command),
+                ...iclaude.args,
+                'run',
+                resume ? `--resume "${providerSessionId}"` : `--session-id "${providerSessionId}"`,
+                modeArg,
+                modelArg,
+            ].filter(Boolean).join(' ');
+            ptyProcess = pty.spawn('bash', ['-c', claudeCommand], {
                 name: 'xterm-256color',
                 cols: 120,
                 rows: 40,
                 cwd: projectPath,
-                env: buildPtyEnv(claudeConfigDir),
+                env: buildPtyEnv(claudeConfigDir, { hooshClaude: true }),
             });
-            debugLog('spawn', { claudeScript, claudeArgs, pid: ptyProcess.pid, projectPath });
+            debugLog('spawn', { claudeCommand, pid: ptyProcess.pid, projectPath });
         }
         else {
             const claudeCommand = resume
@@ -1396,12 +1532,26 @@ const NESTING_ENV_VARS = [
     'CLOUDCLI_CLAUDE_PROXY_SESSION',
 ];
 
-function buildPtyEnv(configDir) {
+function buildPtyEnv(configDir, options = {}) {
     const env = { ...process.env };
     for (const key of NESTING_ENV_VARS) {
         delete env[key];
     }
-    if (typeof configDir === 'string' && configDir.trim()) {
+    if (options.hooshClaude) {
+        // Hoosh Code claude: the iclaude launcher owns authentication (device
+        // token + pooled credentials in its own config dir). Any direct
+        // ANTHROPIC_* credential from the surrounding environment or the
+        // settings env would be rejected by the proxy ("set up once on this
+        // computer") — or worse, silently bill a fallback path — so it never
+        // reaches the child.
+        for (const key of ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_OAUTH_TOKEN', 'HOOSHCODE_CLAUDE', 'HOOSHCODE_CLAUDE_TOKEN', 'HOOSHCODE_URL', 'HOOSHCODE_TOKEN', 'CLAUDE_PROXY_TOKEN']) {
+            delete env[key];
+        }
+        if (typeof configDir === 'string' && configDir.trim()) {
+            env.CLAUDE_CONFIG_DIR = configDir.trim();
+        }
+    }
+    else if (typeof configDir === 'string' && configDir.trim()) {
         // A second official Claude login: run real Claude Code against that
         // account's own credentials directory (never the managed iClaude
         // transport — the wrapper's oauth branch keeps this env intact).

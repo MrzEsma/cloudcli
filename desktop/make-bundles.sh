@@ -202,6 +202,33 @@ PYT
   rm -rf "$stage/runtime/lib" "$stage/runtime/include" "$stage/runtime/share" 2>/dev/null || true
 }
 
+add_iclaude() {  # add_iclaude <stage> <target> — Hoosh Code claude launcher (device setup)
+  local stage="$1" target="$2"
+  local key
+  case "$target" in
+    linux-x64)    key=linux-amd64 ;;
+    win-x64)      key=windows-amd64 ;;
+    darwin-arm64) key=darwin-arm64 ;;
+    darwin-x64)   key=darwin-amd64 ;;
+    *) echo "  [iclaude] no mapping for $target — skipped"; return 0 ;;
+  esac
+  echo "  [iclaude] hoosh claude launcher ($key)"
+  local manifest entry sha file url
+  manifest="$(curl -fsSL --retry 3 "https://claude.flearning.ir/dl/manifest.json")"
+  entry="$(python3 -c "import json,sys;m=json.load(sys.stdin);b=[x for x in m['builds'] if x['key']=='$key'][0];print(b['sha256'],b['file'],b['url'])" <<<"$manifest")"
+  read -r sha file url <<<"$entry"
+  local cache="$WORK_DL/$file"
+  if [[ ! -s "$cache" ]] || [[ "$(sha256sum "$cache" | cut -d' ' -f1)" != "$sha" ]]; then
+    curl -fsSL --retry 3 -o "$cache" "https://claude.flearning.ir$url"
+  fi
+  local got; got="$(sha256sum "$cache" | cut -d' ' -f1)"
+  [[ "$got" == "$sha" ]] || { echo "  [iclaude] checksum mismatch ($got)"; return 1; }
+  mkdir -p "$stage/runtime/iclaude"
+  local exe="iclaude"; [[ "$key" == windows-* ]] && exe="iclaude.exe"
+  cp "$cache" "$stage/runtime/iclaude/$exe"
+  chmod +x "$stage/runtime/iclaude/$exe"
+}
+
 add_mingit() {  # Windows bundles ship PortableGit: git + bash for the agent shell tools
   local stage="$1"
   echo "  [git] PortableGit (git + bash for Claude's shell tools)"
@@ -334,6 +361,7 @@ build_target() {
 
   retarget_natives "$stage" "$pf" "$arch"
   add_runtime "$stage" "$target"
+  add_iclaude "$stage" "$target"
   [[ "$pf" == win32 ]] && { write_cmd_shims "$stage"; add_mingit "$stage"; }
 
   echo "  [launchers] permissions + notices"

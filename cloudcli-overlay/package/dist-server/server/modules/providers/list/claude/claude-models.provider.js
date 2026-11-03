@@ -107,7 +107,12 @@ async function fetchClaudeCatalogIds() {
         return typeof fromSettings === 'string' && fromSettings.trim() !== '' ? fromSettings : '';
     };
     const baseUrl = (pickEnv('ANTHROPIC_BASE_URL') || 'https://api.anthropic.com').replace(/\/+$/, '');
-    const token = pickEnv('ANTHROPIC_AUTH_TOKEN') || pickEnv('ANTHROPIC_API_KEY') || pickEnv('CLAUDE_CODE_OAUTH_TOKEN') || '';
+    // Hoosh Code claude access: the panel token (HOOSHCODE_CLAUDE_TOKEN) is a
+    // seat credential — the proxy only lists models for it via x-api-key;
+    // the Bearer path is gated behind the iclaude device setup (403).
+    const hooshToken = pickEnv('HOOSHCODE_CLAUDE_TOKEN');
+    const token = hooshToken
+        || pickEnv('ANTHROPIC_AUTH_TOKEN') || pickEnv('ANTHROPIC_API_KEY') || pickEnv('CLAUDE_CODE_OAUTH_TOKEN') || '';
     if (!/^https?:\/\//.test(baseUrl) || !token) {
         return null;
     }
@@ -116,7 +121,7 @@ async function fetchClaudeCatalogIds() {
     try {
         const response = await fetch(`${baseUrl}/v1/models`, {
             headers: {
-                authorization: `Bearer ${token}`,
+                ...(hooshToken ? { 'x-api-key': hooshToken } : { authorization: `Bearer ${token}` }),
                 'anthropic-version': '2023-06-01',
             },
             signal: controller.signal,
