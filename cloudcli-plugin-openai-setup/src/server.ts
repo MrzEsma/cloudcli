@@ -587,7 +587,7 @@ function claudeStatus(paths: ClaudeSetupPaths): ClaudeSetupStatus {
   // present in its config). Without it the proxy refuses every request.
   const deviceReady = (() => {
     try {
-      const iclaudeConfig = readJson(path.join(homeDirOf(paths), '.config', 'iclaude', 'config.json'));
+      const iclaudeConfig = readJson(iclaudeConfigPath(homeDirOf(paths)));
       return typeof iclaudeConfig?.device_token === 'string' && iclaudeConfig.device_token.trim() !== '';
     } catch {
       return false;
@@ -618,11 +618,26 @@ function claudeStatus(paths: ClaudeSetupPaths): ClaudeSetupStatus {
 }
 
 // claudeSetupPaths carries absolute paths under the effective home; recover
-// that home for iclaude's own config (~/.config/iclaude).
+// that home for iclaude's own config.
 function homeDirOf(paths: ClaudeSetupPaths): string {
   return path.dirname(paths.claudeDir);
 }
 
+// iclaude (Go) resolves its own config with os.UserConfigDir(): %APPDATA%\iclaude
+// on Windows, ~/Library/Application Support/iclaude on macOS, ~/.config/iclaude
+// elsewhere — on Windows/macOS that is outside the portable home.
+function iclaudeConfigPath(homeDir: string): string {
+  if (process.platform === 'win32') {
+    const appData = typeof process.env.APPDATA === 'string' && process.env.APPDATA.trim()
+      ? process.env.APPDATA
+      : path.join(homeDir, 'AppData', 'Roaming');
+    return path.join(appData, 'iclaude', 'config.json');
+  }
+  if (process.platform === 'darwin') {
+    return path.join(homeDir, 'Library', 'Application Support', 'iclaude', 'config.json');
+  }
+  return path.join(homeDir, '.config', 'iclaude', 'config.json');
+}
 
 // ---- Claude Code account login (subscription, interactive) ------------------
 // `claude setup-token` runs Anthropic's own OAuth flow: the user's browser

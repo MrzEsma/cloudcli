@@ -6,7 +6,7 @@ f65c109bc0b3399853d55a1740955e88be4bc0839069e3472ada0f5383ebc19c  package/dist-s
 c160ade05c95b09375523a595d332af8c34c0f8524a276e7962638a8455c7103  package/dist-server/server/modules/database/schema.js
 1983009a0ba08ca3be97d82fe7613f97dc46dbc2309a7e6aea6fec7243638c14  package/dist-server/server/modules/projects/services/project-clone.service.js
 8c307ed27c486fbf55f5395e9c40f36527c9d39eaed341de7f189b00d4d961bb  package/dist-server/server/modules/projects/services/projects-with-sessions-fetch.service.js
-2490dacf90f46b6611e78e365d44d570b1f52266e0891ad39611d71097562b60  package/dist-server/server/modules/providers/list/claude/claude-auth.provider.js
+85a0fbe198491798813452153d3657d1264577cd9459ec8abfb04004ab6ed037  package/dist-server/server/modules/providers/list/claude/claude-auth.provider.js
 fd995deeb60e9b04298e74f7e0200b1c88fcefe07dc1def9aa9e9f9eec614883  package/dist-server/server/modules/providers/list/claude/claude-models.provider.js
 0d98d9636cb488540af7edef461c9b6e9565ce5d07160b0c77ca5ec90e416ddf  package/dist-server/server/modules/providers/list/claude/claude-session-synchronizer.provider.js
 84b1f2b76240d76b832a5061ed52e88a705db80ea84c6b65ba1323711c18f104  package/dist-server/server/modules/providers/list/codex/codex-auth.provider.js

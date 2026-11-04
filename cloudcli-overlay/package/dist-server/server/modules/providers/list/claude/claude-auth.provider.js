@@ -7,6 +7,22 @@ import { resolveClaudeCodeExecutablePath } from '../../../../shared/claude-cli-p
 import { readObjectRecord, readOptionalString } from '../../../../shared/utils.js';
 const hasErrorCode = (error, code) => (error instanceof Error && 'code' in error && error.code === code);
 const isIClaudeMode = () => process.env.CLAUDE_AUTH_MODE === 'iclaude';
+
+// iclaude (Go) resolves its own config with os.UserConfigDir(): %APPDATA%\iclaude
+// on Windows, ~/Library/Application Support/iclaude on macOS, ~/.config/iclaude
+// elsewhere — on Windows/macOS that is outside the portable home.
+function iclaudeConfigPath(homeDir) {
+    if (process.platform === 'win32') {
+        const appData = typeof process.env.APPDATA === 'string' && process.env.APPDATA.trim()
+            ? process.env.APPDATA
+            : path.join(homeDir, 'AppData', 'Roaming');
+        return path.join(appData, 'iclaude', 'config.json');
+    }
+    if (process.platform === 'darwin') {
+        return path.join(homeDir, 'Library', 'Application Support', 'iclaude', 'config.json');
+    }
+    return path.join(homeDir, '.config', 'iclaude', 'config.json');
+}
 const readManagedTeamMarker = async () => {
     try {
         const markerPath = process.env.ICLAUDE_ATTESTATION_PATH
@@ -95,7 +111,7 @@ export class ClaudeProviderAuth {
      */
     async isHooshDeviceReady() {
         try {
-            const configPath = path.join(os.homedir(), '.config', 'iclaude', 'config.json');
+            const configPath = iclaudeConfigPath(os.homedir());
             const config = readObjectRecord(JSON.parse(await readFile(configPath, 'utf8')));
             return typeof config?.device_token === 'string' && config.device_token.trim() !== '';
         }
