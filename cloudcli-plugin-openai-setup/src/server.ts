@@ -466,6 +466,7 @@ function translateHooshSetupLine(line: string): string {
   if (line.includes("Couldn't connect")) return 'ارتباط با هوش کد برقرار نشد. اینترنت را بررسی و دوباره تلاش کنید.';
   if (line.includes("doesn't include Claude Code")) return 'این دسترسی شامل Claude Code نیست. با پشتیبانی هوش کد تماس بگیرید.';
   if (line.includes('busy right now')) return 'سرور هوش کد فعلاً شلوغ است. یک دقیقه بعد دوباره تلاش کنید.';
+  if (line.includes('computers, which is the limit')) return 'سقف کامپیوترهای این حساب پر شده. از پشتیبانی هوش کد بخواهید دستگاهی که دیگر استفاده نمی‌کنید را آزاد کند، بعد دوباره تلاش کنید.';
   if (line.includes('Downloading')) return 'در حال دانلود Claude Code از هوش کد…';
   if (line.includes('Setting up') || line.includes('Connecting')) return 'در حال ثبت این دستگاه روی حساب هوش کد…';
   if (line.includes('Ready') || line.includes('Installed')) return 'راه‌اندازی کامل شد.';
@@ -530,7 +531,7 @@ function startHooshClaudeSetup(token: string, homeDir: string, paths: ClaudeSetu
         setup.log.push('اتصال Claude Code هوش کد فعال شد.');
         finishHooshClaudeSetup(setup, 'done', null);
       } else {
-        const lastError = [...setup.log].reverse().find((line) => /پذیرفته نشد|شامل Claude Code نیست|برقرار نشد|شلوغ/.test(line));
+        const lastError = [...setup.log].reverse().find((line) => /پذیرفته نشد|شامل Claude Code نیست|برقرار نشد|شلوغ|سقف کامپیوترهای/.test(line));
         finishHooshClaudeSetup(setup, 'error', lastError || `راه‌اندازی ناموفق بود (کد ${exitCode ?? 0}). دوباره تلاش کنید.`);
       }
     });
